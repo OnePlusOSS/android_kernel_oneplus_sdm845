@@ -1139,10 +1139,10 @@ static int __cam_req_mgr_create_subdevs(
  *
  */
 static void __cam_req_mgr_destroy_subdev(
-	struct cam_req_mgr_connected_device *l_device)
+	struct cam_req_mgr_connected_device **l_device)
 {
-	kfree(l_device);
-	l_device = NULL;
+	kfree(*l_device);
+	*l_device = NULL;
 }
 
 /**
@@ -2207,8 +2207,7 @@ static int __cam_req_mgr_unlink(struct cam_req_mgr_core_link *link)
 			"Unlink for all devices was not successful");
 
 	/* Free memory holding data of linked devs */
-	__cam_req_mgr_destroy_subdev(link->l_dev);
-
+	__cam_req_mgr_destroy_subdev(&(link->l_dev));
 	/* Destroy the link handle */
 	rc = cam_destroy_device_hdl(link->link_hdl);
 	if (rc < 0) {
@@ -2367,7 +2366,7 @@ int cam_req_mgr_link(struct cam_req_mgr_link_info *link_info)
 	mutex_unlock(&g_crm_core_dev->crm_lock);
 	return rc;
 setup_failed:
-	__cam_req_mgr_destroy_subdev(link->l_dev);
+	__cam_req_mgr_destroy_subdev(&(link->l_dev));
 create_subdev_failed:
 	cam_destroy_device_hdl(link->link_hdl);
 	link_info->link_hdl = 0;
