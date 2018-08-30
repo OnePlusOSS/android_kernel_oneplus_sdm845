@@ -278,13 +278,6 @@ static inline void ht_wake_up(void)
 	wake_up_process(rocket.stable_thread);
 }
 
-static inline bool ht_is_freezing(void)
-{
-	if (likely(!atomic_read(&system_freezing_cnt)))
-		return false;
-	return true;
-}
-
 /* main thread for monitor */
 static int ht_monitor(void *arg)
 {
@@ -299,7 +292,7 @@ static int ht_monitor(void *arg)
 			continue;
 		}
 
-		if (likely(!ht_is_freezing()))
+		if (likely(!pm_freezing))
 			ht_collect_resources();
 
 		/* check tsens data to make decision */
