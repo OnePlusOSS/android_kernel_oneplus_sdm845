@@ -66,7 +66,7 @@
 #ifndef HiKey_620_COMPILATION_FIX
 #include <linux/wakelock.h>
 #endif
-
+#include <linux/project_info.h>
 #include <linux/timer.h>
 #include "pn5xx.h"
 
@@ -1284,6 +1284,8 @@ static int pn544_probe(struct i2c_client *client,
      * hardware info is required during probe*/
     check_hw_info();
 #endif
+
+    push_component_info(NFC, "NQ330", "NXP");
 
     return 0;
 
