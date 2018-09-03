@@ -2339,7 +2339,7 @@ unsigned long uid_lru_size(struct lruvec *lruvec)
 		if (!managed_zone(zone))
 			continue;
 
-		lru_size = zone_page_state(&lruvec_pgdat(lruvec)->node_zones[zid],
+		lru_size += zone_page_state(&lruvec_pgdat(lruvec)->node_zones[zid],
 				       NR_ZONE_UID_LRU);
 	}
 
