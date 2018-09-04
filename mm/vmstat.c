@@ -1090,8 +1090,13 @@ const char * const vmstat_text[] = {
 	"vmacache_full_flushes",
 #endif
 #ifdef CONFIG_SPECULATIVE_PAGE_FAULT
-	"speculative_pgfault"
+	"speculative_pgfault",
 #endif
+	TEXTS_FOR_ZONES("allocstall_pri1")
+	TEXTS_FOR_ZONES("allocstall_pri2")
+	TEXTS_FOR_ZONES("allocstall_pri3")
+	TEXTS_FOR_ZONES("allocstall_pri4")
+
 #endif /* CONFIG_VM_EVENT_COUNTERS */
 };
 #endif /* CONFIG_PROC_FS || CONFIG_SYSFS || CONFIG_NUMA */
