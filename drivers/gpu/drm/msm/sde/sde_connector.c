@@ -488,12 +488,21 @@ static int _sde_connector_update_power_locked(struct sde_connector *c_conn)
 	}
 	c_conn->last_panel_power_mode = mode;
 
+#if 0
 	mutex_unlock(&c_conn->lock);
 	if (mode != SDE_MODE_DPMS_ON)
 		sde_connector_schedule_status_work(connector, false);
 	else
 		sde_connector_schedule_status_work(connector, true);
 	mutex_lock(&c_conn->lock);
+#endif
+
+	if (mode != SDE_MODE_DPMS_ON) {
+		mutex_unlock(&c_conn->lock);
+		sde_connector_schedule_status_work(connector, false);
+		mutex_lock(&c_conn->lock);
+    }
+
 
 	return rc;
 }
@@ -636,7 +645,7 @@ void sde_connector_helper_bridge_disable(struct drm_connector *connector)
 	}
 
 	/* Disable ESD thread */
-	sde_connector_schedule_status_work(connector, false);
+	//sde_connector_schedule_status_work(connector, false);
 
 	c_conn = to_sde_connector(connector);
 	if (c_conn->panel_dead) {
