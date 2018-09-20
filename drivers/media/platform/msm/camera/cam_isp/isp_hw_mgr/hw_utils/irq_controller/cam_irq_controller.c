@@ -599,7 +599,7 @@ static void cam_irq_controller_th_processing(
         if (irq_bh_api->get_bh_payload_func) {
             if (irq_bh_api->get_bh_payload_func(
                 evt_handler->bottom_half, &bh_cmd)) {
-                CAM_ERR(CAM_ISP, "Can't get bh payload");
+                CAM_ERR_RATE_LIMIT(CAM_ISP, "Can't get bh payload");
                 continue;
             }
         }
