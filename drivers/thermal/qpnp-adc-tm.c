@@ -36,9 +36,6 @@
 #include <linux/platform_device.h>
 #include "thermal_core.h"
 
-#undef pr_debug
-#define pr_debug pr_err
-
 /* QPNP VADC TM register definition */
 #define QPNP_REVISION3					0x2
 #define QPNP_PERPH_SUBTYPE				0x5
