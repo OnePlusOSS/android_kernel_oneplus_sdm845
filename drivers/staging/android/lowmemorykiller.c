@@ -1002,8 +1002,7 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 
 	batch_kill_init(bkws);
 
-	uid_lru_total =
-		uid_lru_size(mem_cgroup_lruvec(NODE_DATA(0), sc->memcg));
+	uid_lru_total = uid_lru_size();
 
 	if (!mutex_trylock(&scan_mutex))
 		return 0;
