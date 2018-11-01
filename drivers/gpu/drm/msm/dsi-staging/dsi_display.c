@@ -1130,6 +1130,7 @@ int dsi_display_set_power(struct drm_connector *connector,
 
 	switch (power_mode) {
 	case SDE_MODE_DPMS_LP1:
+		rc = dsi_panel_set_lp1(display->panel);
 		printk(KERN_ERR"SDE_MODE_DPMS_LP1\n");
 		if (strcmp(display->panel->name, "samsung s6e3fc2x01 cmd mode dsi panel") == 0){
 		display->panel->aod_mode=2;
