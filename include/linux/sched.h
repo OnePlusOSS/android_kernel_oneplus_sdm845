@@ -913,6 +913,10 @@ struct signal_struct {
 	 * oom
 	 */
 	bool oom_flag_origin;
+	spinlock_t	reclaim_state_lock;
+	unsigned long reclaim_timeout;
+	int swapin_should_readahead_m;
+	int memplus_type;
 	short oom_score_adj;		/* OOM kill score adjustment */
 	short oom_score_adj_min;	/* OOM kill score adjustment min value.
 					 * Only settable by CAP_SYS_RESOURCE. */
@@ -2282,7 +2286,7 @@ struct task_struct {
 	bool utask_slave;
 	/* Ted, 20180425, non-exist dcache*/
 	struct nedf_node *nn;
-        int hot_count;
+	int hot_count;
 /* CPU-specific state of this task */
 	struct thread_struct thread;
 /*

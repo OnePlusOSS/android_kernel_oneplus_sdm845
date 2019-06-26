@@ -63,6 +63,12 @@
 #define CREATE_TRACE_POINTS
 #include "trace/lowmemorykiller.h"
 
+#ifdef CONFIG_MEMPLUS
+extern long ion_total_size(void);
+extern long kgsl_total_size(void);
+extern long get_uid_pss(uid_t uid, bool system_pss);
+#endif
+int vm_memory_plus_debug __read_mostly = 0;
 /* to enable lowmemorykiller */
 static int enable_lmk = 1;
 module_param_named(enable_lmk, enable_lmk, int, 0644);
@@ -95,6 +101,10 @@ unsigned long killed_num;
 			pr_info(x);			\
 	} while (0)
 
+unsigned long get_max_minfree(void)
+{
+	return lowmem_minfree[lowmem_minfree_size - 1];
+}
 static unsigned long lowmem_count(struct shrinker *s,
 				  struct shrink_control *sc)
 {
@@ -190,8 +200,12 @@ static int lmk_vmpressure_notifier(struct notifier_block *nb,
 		other_file = global_node_page_state(NR_FILE_PAGES) -
 			global_node_page_state(NR_SHMEM) -
 			total_swapcache_pages();
+#ifdef CONFIG_DEFRAG_HELPER
+		other_free = global_page_state(NR_FREE_PAGES) -
+			global_page_state(NR_FREE_DEFRAG_POOL);
+#else
 		other_free = global_page_state(NR_FREE_PAGES);
-
+#endif
 		atomic_set(&shift_adj, 1);
 		trace_almk_vmpressure(pressure, other_free, other_file);
 	} else if (pressure >= 90) {
@@ -203,8 +217,12 @@ static int lmk_vmpressure_notifier(struct notifier_block *nb,
 		other_file = global_node_page_state(NR_FILE_PAGES) -
 			global_node_page_state(NR_SHMEM) -
 			total_swapcache_pages();
-
+#ifdef CONFIG_DEFRAG_HELPER
+		other_free = global_page_state(NR_FREE_PAGES) -
+			global_page_state(NR_FREE_DEFRAG_POOL);
+#else
 		other_free = global_page_state(NR_FREE_PAGES);
+#endif
 
 		if ((other_free < lowmem_minfree[array_size - 1]) &&
 		    (other_file < vmpressure_file_min)) {
@@ -901,6 +919,10 @@ static unsigned long lowmem_batch_kill(
 			long cache_size = other_file * (long)(PAGE_SIZE / 1024);
 			long cache_limit = minfree * (long)(PAGE_SIZE / 1024);
 			long free = other_free * (long)(PAGE_SIZE / 1024);
+#ifdef CONFIG_MEMPLUS
+			long ion_size = ion_total_size() / 1024;
+			long kgsl = kgsl_total_size() / 1024;
+#endif
 
 			if (test_task_lmk_waiting(selected) &&
 					(test_task_state(selected, TASK_UNINTERRUPTIBLE))) {
@@ -927,6 +949,7 @@ static unsigned long lowmem_batch_kill(
 			lowmem_print(1, "batch Killing '%s' (%d) (tgid %d), adj %hd,\n"
 					"to free %ldkB on behalf of '%s' (%d) because\n"
 					"cache %ldkB is below limit %ldkB for oom score %hd\n"
+					"uid_lru_list size %ld pages\n"
 					"Free memory is %ldkB above reserved.\n"
 					"Free CMA is %ldkB\n"
 					"Total reserve is %ldkB\n"
@@ -941,6 +964,7 @@ static unsigned long lowmem_batch_kill(
 					current->comm, current->pid,
 					cache_size, cache_limit,
 					min_score_adj,
+					uid_lru_size(),
 					free,
 					global_page_state(NR_FREE_CMA_PAGES) *
 					(long)(PAGE_SIZE / 1024),
@@ -955,6 +979,22 @@ static unsigned long lowmem_batch_kill(
 						(long)(PAGE_SIZE / 1024),
 					sc->gfp_mask);
 
+#ifdef CONFIG_MEMPLUS
+			if (vm_memory_plus_debug && current_is_kswapd())
+				lowmem_print(1, "ion %ldkB\n"
+						"kgsl %ldkB\n"
+						"KernelStack %ldkB\n"
+						"PageTable %ldkB\n"
+						"slab %ldkB\n"
+						"system app %ldkB\n",
+						ion_size,
+						kgsl,
+						global_page_state(NR_KERNEL_STACK_KB),
+						(global_page_state(NR_PAGETABLE) << (PAGE_SHIFT - 10)),
+						((global_page_state(NR_SLAB_RECLAIMABLE) +
+							global_page_state(NR_SLAB_UNRECLAIMABLE))<<(PAGE_SHIFT - 10)),
+						get_uid_pss(10000, true));
+#endif
 			if (lowmem_debug_level >= 2 && selected_oom_score_adj == 0) {
 				show_mem(SHOW_MEM_FILTER_NODES);
 				show_mem_call_notifiers();
@@ -1006,16 +1046,20 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 
 	if (!mutex_trylock(&scan_mutex))
 		return 0;
-
+#ifdef CONFIG_DEFRAG_HELPER
+	other_free = global_page_state(NR_FREE_PAGES) -
+			global_page_state(NR_FREE_DEFRAG_POOL) -
+						totalreserve_pages;
+#else
 	other_free = global_page_state(NR_FREE_PAGES) - totalreserve_pages;
-
+#endif
 	if (global_node_page_state(NR_SHMEM) + total_swapcache_pages() +
 			global_node_page_state(NR_UNEVICTABLE) <
 			global_node_page_state(NR_FILE_PAGES))
 		other_file = global_node_page_state(NR_FILE_PAGES) -
-					global_node_page_state(NR_SHMEM) -
-					global_node_page_state(NR_UNEVICTABLE) -
-					total_swapcache_pages();
+				global_node_page_state(NR_SHMEM) -
+				global_node_page_state(NR_UNEVICTABLE) -
+						total_swapcache_pages();
 	else
 		other_file = 0;
 
@@ -1025,10 +1069,10 @@ static unsigned long lowmem_scan(struct shrinker *s, struct shrink_control *sc)
 		array_size = lowmem_adj_size;
 	if (lowmem_minfree_size < array_size)
 		array_size = lowmem_minfree_size;
+
 	for (i = 0; i < array_size; i++) {
 		minfree = lowmem_minfree[i];
-		if (other_free < minfree &&
-		    other_file < minfree + uid_lru_total) {
+		if (other_free < minfree && other_file < minfree) {
 			min_score_adj = lowmem_adj[i];
 			break;
 		}
@@ -1254,6 +1298,18 @@ quick_select_fast:
 
 	if (selected) {
 		long cache_size = other_file * (long)(PAGE_SIZE / 1024);
+		long uidlru_cache = uid_lru_total * (long)(PAGE_SIZE / 1024);
+		long anon_size = global_node_page_state(NR_ANON_MAPPED)
+					* (long)(PAGE_SIZE / 1024);
+		long slab_size = (global_page_state(NR_SLAB_RECLAIMABLE) +
+		    global_page_state(NR_SLAB_UNRECLAIMABLE))
+		    * (long)(PAGE_SIZE / 1024);
+		long unevictable_size =
+			global_node_page_state(NR_LRU_BASE + LRU_UNEVICTABLE)
+			* (long)(PAGE_SIZE / 1024);
+		long sreclaimable_size =
+			global_page_state(NR_SLAB_RECLAIMABLE)
+			* (long)(PAGE_SIZE / 1024);
 		long cache_limit = minfree * (long)(PAGE_SIZE / 1024);
 		long free = other_free * (long)(PAGE_SIZE / 1024);
 
@@ -1282,6 +1338,11 @@ quick_select_fast:
 		lowmem_print(1, "Killing '%s' (%d) (tgid %d), adj %hd,\n"
 			"to free %ldkB on behalf of '%s' (%d) because\n"
 			"cache %ldkB is below limit %ldkB for oom score %hd\n"
+			"ramboost cache %ldkB\n"
+			"anon %ldkB\n"
+			"unevictable %ldkB\n"
+			"slab %ldkB\n"
+			"SReclaimable %ldkB\n"
 			"Free memory is %ldkB above reserved.\n"
 			"Free CMA is %ldkB\n"
 			"Total reserve is %ldkB\n"
@@ -1296,6 +1357,11 @@ quick_select_fast:
 			current->comm, current->pid,
 			cache_size, cache_limit,
 			min_score_adj,
+			uidlru_cache,
+			anon_size,
+			unevictable_size,
+			slab_size,
+			sreclaimable_size,
 			free,
 			global_page_state(NR_FREE_CMA_PAGES) *
 			(long)(PAGE_SIZE / 1024),
@@ -1309,8 +1375,16 @@ quick_select_fast:
 			total_swapcache_pages() *
 			(long)(PAGE_SIZE / 1024),
 			sc->gfp_mask);
-
-		if (lowmem_debug_level >= 2 && selected_oom_score_adj == 0) {
+			for_each_process(tsk) {
+				int anno_size;
+				if (tsk->group_leader && tsk->group_leader->mm)
+					anno_size = get_mm_counter(tsk->group_leader->mm, MM_ANONPAGES);
+				else
+					continue;
+				if (anno_size > 256 && tsk->signal)
+					lowmem_print(1, "%s anno_size  %d adj %d\n", tsk->group_leader->comm, anno_size, tsk->signal->oom_score_adj);
+			}
+		if (lowmem_debug_level >= 0 && selected_oom_score_adj == 0) {
 			show_mem(SHOW_MEM_FILTER_NODES);
 			show_mem_call_notifiers();
 			dump_tasks(NULL, NULL);

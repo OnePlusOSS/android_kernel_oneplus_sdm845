@@ -1412,6 +1412,14 @@ static struct ctl_table vm_table[] = {
 		.extra1		= &zero,
 		.extra2		= &two,
 	},
+	{
+		.procname	= "page_cache_reside_max",
+		.data		= &sysctl_page_cache_reside_max,
+		.maxlen		= sizeof(sysctl_page_cache_reside_max),
+		.mode		= 0666,
+		.proc_handler	= proc_dointvec_minmax,
+	},
+
 
 	{
 		.procname	= "oom_kill_allocating_task",
@@ -1543,6 +1551,33 @@ static struct ctl_table vm_table[] = {
 		.proc_handler   = proc_dointvec_minmax,
 		.extra1         = &zero,
 		.extra2         = &one,
+	},
+	{
+		.procname	= "memory_plus_test_worstcase",
+		.data		= &vm_memory_plus_test_worstcase,
+		.maxlen		= sizeof(vm_memory_plus),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &neg_one,
+		.extra2		= &one_thousand,
+	},
+	{
+		.procname	= "memory_plus",
+		.data		= &vm_memory_plus,
+		.maxlen		= sizeof(vm_memory_plus),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &neg_one,
+		.extra2		= &one_thousand,
+	},
+	{
+		.procname	= "memory_plus_debug",
+		.data		= &vm_memory_plus_debug,
+		.maxlen		= sizeof(vm_memory_plus_debug),
+		.mode		= 0644,
+		.proc_handler	= proc_dointvec_minmax,
+		.extra1		= &neg_one,
+		.extra2		= &one_thousand,
 	},
 #ifdef CONFIG_HUGETLB_PAGE
 	{

@@ -19,6 +19,9 @@
 #include <linux/migrate.h>
 
 #include <asm/pgtable.h>
+#ifdef CONFIG_MEMPLUS
+#include <linux/mm_inline.h>
+#endif
 
 /*
  * swapper_space is a fiction, retained to simplify the path through
@@ -138,6 +141,10 @@ void __delete_from_swap_cache(struct page *page)
 {
 	swp_entry_t entry;
 	struct address_space *address_space;
+#ifdef CONFIG_MEMPLUS
+	struct zone *zone = page_zone(page);
+	unsigned long flag;
+#endif
 
 	VM_BUG_ON_PAGE(!PageLocked(page), page);
 	VM_BUG_ON_PAGE(!PageSwapCache(page), page);
@@ -148,6 +155,25 @@ void __delete_from_swap_cache(struct page *page)
 	radix_tree_delete(&address_space->page_tree, swp_offset(entry));
 	set_page_private(page, 0);
 	ClearPageSwapCache(page);
+#ifdef CONFIG_MEMPLUS
+	if (memplus_enabled()) {
+		spin_lock_irqsave(zone_lru_lock(zone), flag);
+		if (PageLRU(page)) {
+			struct lruvec *lruvec;
+			enum lru_list lru, oldlru = LRU_INACTIVE_ANON_SWPCACHE;
+			lru = page_lru(page);
+
+			if (lru == LRU_ACTIVE_ANON)
+				oldlru += LRU_ACTIVE;
+
+			lruvec = mem_cgroup_page_lruvec(page, zone->zone_pgdat);
+			list_move(&page->lru, &lruvec->lists[lru]);
+			update_lru_size(lruvec, oldlru, page_zonenum(page), -hpage_nr_pages(page), false);
+			update_lru_size(lruvec, lru, page_zonenum(page), hpage_nr_pages(page), false);
+		}
+		spin_unlock_irqrestore(zone_lru_lock(zone), flag);
+	}
+#endif
 	address_space->nrpages--;
 	__dec_node_page_state(page, NR_FILE_PAGES);
 	INC_CACHE_INFO(del_total);
@@ -160,15 +186,23 @@ void __delete_from_swap_cache(struct page *page)
  * Allocate swap space for the page and add the page to the
  * swap cache.  Caller needs to hold the page lock. 
  */
+#ifdef CONFIG_MEMPLUS
+int add_to_swap(struct page *page, struct list_head *list, unsigned long swap_bdv)
+#else
 int add_to_swap(struct page *page, struct list_head *list)
+#endif
 {
 	swp_entry_t entry;
 	int err;
 
 	VM_BUG_ON_PAGE(!PageLocked(page), page);
 	VM_BUG_ON_PAGE(!PageUptodate(page), page);
-
+#ifdef CONFIG_MEMPLUS
+	entry = get_swap_page(swap_bdv);
+#else
 	entry = get_swap_page();
+#endif
+
 	if (!entry.val)
 		return 0;
 
@@ -198,6 +232,7 @@ int add_to_swap(struct page *page, struct list_head *list)
 			__GFP_HIGH|__GFP_NOMEMALLOC|__GFP_NOWARN);
 
 	if (!err) {
+		count_vm_event(PGADDTOSWAP);
 		return 1;
 	} else {	/* -ENOMEM radix-tree allocation failure */
 		/*
@@ -368,6 +403,9 @@ struct page *__read_swap_cache_async(swp_entry_t entry, gfp_t gfp_mask,
 			/*
 			 * Initiate read into locked page and return.
 			 */
+			if (memplus_enabled())
+				lru_cache_add_active_anon(new_page);
+			else
 			lru_cache_add_anon(new_page);
 			*new_page_allocated = true;
 			return new_page;

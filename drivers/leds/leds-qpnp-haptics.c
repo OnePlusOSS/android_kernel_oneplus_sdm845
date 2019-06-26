@@ -649,6 +649,7 @@ static bool is_haptics_idle(struct hap_chip *chip)
 	}
 
 	if (i >= MAX_RETRIES && (val & HAP_BUSY_BIT)) {
+		pr_info("Haptics Busy after %d retries\n", i);
 		pr_debug("Haptics Busy after %d retries\n", i);
 		return false;
 	}
@@ -709,6 +710,8 @@ static int qpnp_haptics_play_control(struct hap_chip *chip,
 static int qpnp_haptics_play(struct hap_chip *chip, bool enable)
 {
 	int rc = 0, time_ms = chip->play_time_ms;
+
+    pr_err(" enable=%d time_ms=%d\n" ,enable, time_ms);
 
 	if (chip->perm_disable && enable)
 		return 0;
@@ -2604,7 +2607,7 @@ static int qpnp_haptics_probe(struct platform_device *pdev)
 			goto sysfs_fail;
 		}
 	}
-
+		pr_info("qpnp_haptics_probe done\n");
 	return 0;
 
 sysfs_fail:

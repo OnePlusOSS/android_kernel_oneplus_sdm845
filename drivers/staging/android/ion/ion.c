@@ -1901,6 +1901,26 @@ static const struct file_operations debug_heap_fops = {
 	.release = single_release,
 };
 
+#ifdef CONFIG_MEMPLUS
+long ion_total_size(void) {
+	long total_size = 0;
+	struct ion_heap *heap;
+	struct ion_device *idev = container_of(ion_root_client, struct ion_device, clients);
+
+	if (!down_read_trylock(&idev->lock)) {
+		pr_err("Ion output would deadlock, can't print debug information\n");
+		return -1;
+	}
+
+	plist_for_each_entry(heap, &idev->heaps, node) {
+		total_size += atomic_long_read(&heap->total_allocated);
+	}
+	up_read(&idev->lock);
+
+	return total_size;
+}
+#endif
+
 void show_ion_usage(struct ion_device *dev)
 {
 	struct ion_heap *heap;

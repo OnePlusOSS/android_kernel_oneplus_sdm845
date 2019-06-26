@@ -21,3 +21,15 @@ config HOUSTON
 	bool "houston rocket play your temperature guard"
 	help
 	 Realtime temperature monitor
+
+config MEMPLUS
+	default n
+	bool "memory+ feature"
+	help
+	 Memory+ feature
+
+config FSC
+	default n
+	bool "system layer file status cache"
+	help
+	 To cache absence file and avoid stat call storm

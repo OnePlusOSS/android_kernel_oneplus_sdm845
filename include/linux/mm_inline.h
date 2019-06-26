@@ -70,6 +70,11 @@ static __always_inline void del_page_from_lru_list(struct page *page,
 }
 
 
+#ifdef CONFIG_MEMPLUS
+#define MEMPLUS_PAGE_LRU \
+	(vm_memory_plus?LRU_INACTIVE_ANON_SWPCACHE:LRU_INACTIVE_ANON)
+#endif
+
 /**
  * page_lru_base_type - which LRU list type should a page be on?
  * @page: the page to test
@@ -82,6 +87,10 @@ static inline enum lru_list page_lru_base_type(struct page *page)
 {
 	if (page_is_file_cache(page))
 		return LRU_INACTIVE_FILE;
+#ifdef CONFIG_MEMPLUS
+	if (PageSwapCache(page))
+		return MEMPLUS_PAGE_LRU;
+#endif
 	return LRU_INACTIVE_ANON;
 }
 

@@ -2813,7 +2813,10 @@ int do_swap_page(struct fault_env *fe, pte_t orig_pte)
 	 * before page_add_anon_rmap() and swap_free(); try_to_free_swap()
 	 * must be called after the swap_free(), or it will never succeed.
 	 */
-
+#ifdef CONFIG_MEMPLUS
+	if (current_is_swapind())
+		SetPageWillneed(page);
+#endif
 	inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
 	dec_mm_counter_fast(vma->vm_mm, MM_SWAPENTS);
 	pte = mk_pte(page, fe->vma_page_prot);

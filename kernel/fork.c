@@ -1397,6 +1397,9 @@ static int copy_signal(unsigned long clone_flags, struct task_struct *tsk)
 
 	sig->oom_score_adj = current->signal->oom_score_adj;
 	sig->oom_score_adj_min = current->signal->oom_score_adj_min;
+	sig->swapin_should_readahead_m = RECLAIM_STANDBY;
+	sig->reclaim_state_lock = __SPIN_LOCK_UNLOCKED(reclaim_state_lock);
+	sig->memplus_type = TYPE_NORMAL;
 
 	sig->has_child_subreaper = current->signal->has_child_subreaper ||
 				   current->signal->is_child_subreaper;

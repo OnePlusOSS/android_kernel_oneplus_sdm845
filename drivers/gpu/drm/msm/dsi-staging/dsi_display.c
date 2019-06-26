@@ -39,6 +39,7 @@
 #include <linux/pm_qos.h>
 #include <linux/cpufreq.h>
 #include <linux/pm_wakeup.h>
+#include "../sde/sde_trace.h"
 
 #define BIG_CPU_NUMBER 4
 #if defined(CONFIG_ARCH_SDM845)
@@ -69,6 +70,7 @@ static struct pm_qos_request lcdspeedup_big_cpu_qos;
 
 static DEFINE_MUTEX(dsi_display_list_lock);
 static LIST_HEAD(dsi_display_list);
+static DEFINE_MUTEX(dsi_display_clk_mutex);
 static char dsi_display_primary[MAX_CMDLINE_PARAM_LEN];
 static char dsi_display_secondary[MAX_CMDLINE_PARAM_LEN];
 static struct dsi_display_boot_param boot_displays[MAX_DSI_ACTIVE_DISPLAY];
@@ -176,6 +178,7 @@ int dsi_display_set_backlight(void *display, u32 bl_lvl)
 	mutex_lock(&panel->panel_lock);
 	if (!dsi_panel_initialized(panel)) {
 		panel->hbm_backlight = bl_lvl;
+		panel->bl_config.bl_level = bl_lvl;
 		printk(KERN_ERR"HBM_backight =%d\n",panel->hbm_backlight);
 		rc = -EINVAL;
 		goto error;
@@ -1122,42 +1125,19 @@ int dsi_display_set_power(struct drm_connector *connector,
 	int rc = 0;
 	struct msm_drm_notifier notifier_data;
 	int blank;
-	int aod_mode = 0;
 	if (!display || !display->panel) {
 		pr_err("invalid display/panel\n");
 		return -EINVAL;
 	}
-
 	switch (power_mode) {
 	case SDE_MODE_DPMS_LP1:
 		rc = dsi_panel_set_lp1(display->panel);
-		printk(KERN_ERR"SDE_MODE_DPMS_LP1\n");
-		if (strcmp(display->panel->name, "samsung s6e3fc2x01 cmd mode dsi panel") == 0){
-		display->panel->aod_mode=2;
-		}
-		else
-		display->panel->aod_mode=0;
-		if(display->panel->aod_mode!=0){
-	    dsi_panel_set_aod_mode(display->panel, display->panel->aod_mode);
-	    display->panel->aod_status=1;
-		}
 		break;
 	case SDE_MODE_DPMS_LP2:
-		printk(KERN_ERR"SDE_MODE_DPMS_LP2\n");
 		rc = dsi_panel_set_lp2(display->panel);
 		break;
 	default:
-		printk(KERN_ERR"SDE_MODE_DPMS default\n");
 		rc = dsi_panel_set_nolp(display->panel);
-		if ((power_mode == SDE_MODE_DPMS_ON) && display->panel->aod_status){
-			aod_mode=0;
-		    printk(KERN_ERR"Turn off AOD MODE aod_mode = %d\n",aod_mode);
-		    dsi_panel_set_aod_mode(display->panel, aod_mode);
-		} else if ((power_mode == SDE_MODE_DPMS_OFF)
-		        && display->panel->aod_status){
-            display->panel->aod_status = 0;
-            display->panel->aod_curr_mode = 0;
-		}
 		break;
 	}
 	if (power_mode == SDE_MODE_DPMS_ON) {
@@ -4391,6 +4371,43 @@ int dsi_display_splash_res_cleanup(struct  dsi_display *display)
 	return rc;
 }
 
+static int dsi_display_link_clk_force_update_ctrl(void *handle)
+{
+	int rc = 0;
+
+	if (!handle) {
+		pr_err("%s: Invalid arg\n", __func__);
+		return -EINVAL;
+	}
+
+	mutex_lock(&dsi_display_clk_mutex);
+
+	rc = dsi_display_link_clk_force_update(handle);
+
+	mutex_unlock(&dsi_display_clk_mutex);
+
+	return rc;
+}
+
+int dsi_display_clk_ctrl(void *handle,
+	enum dsi_clk_type clk_type, enum dsi_clk_state clk_state)
+{
+	int rc = 0;
+
+	if (!handle) {
+		pr_err("%s: Invalid arg\n", __func__);
+		return -EINVAL;
+	}
+
+	mutex_lock(&dsi_display_clk_mutex);
+	rc = dsi_clk_req_state(handle, clk_type, clk_state);
+	if (rc)
+		pr_err("%s: failed set clk state, rc = %d\n", __func__, rc);
+	mutex_unlock(&dsi_display_clk_mutex);
+
+	return rc;
+}
+
 static int dsi_display_force_update_dsi_clk(struct dsi_display *display)
 {
 	int rc = 0;
@@ -4550,7 +4567,7 @@ static ssize_t sysfs_dynamic_dsi_clk_write(struct device *dev,
 
 	pr_info("%s: bitrate param value: '%d'\n", __func__, clk_rate);
 
-	mutex_lock(&display->display_lock);
+	mutex_lock(&dsi_display_clk_mutex);
 
 	display->cached_clk_rate = clk_rate;
 	rc = dsi_display_request_update_dsi_bitrate(display, clk_rate);
@@ -4570,7 +4587,7 @@ static ssize_t sysfs_dynamic_dsi_clk_write(struct device *dev,
 	}
 	atomic_set(&display->clkrate_change_pending, 1);
 
-	mutex_unlock(&display->display_lock);
+	mutex_unlock(&dsi_display_clk_mutex);
 
 	return count;
 
@@ -6804,6 +6821,78 @@ int dsi_display_get_hbm_mode(struct drm_connector *connector)
 	return dsi_display->panel->hbm_mode;
 }
 
+extern int oneplus_force_screenfp;
+
+int dsi_display_set_fp_hbm_mode(struct drm_connector *connector, int level)
+{
+    struct dsi_display *dsi_display = NULL;
+	struct dsi_panel *panel = NULL;
+	struct dsi_bridge *c_bridge;
+	int rc = 0;
+
+    if ((connector == NULL) || (connector->encoder == NULL)
+            || (connector->encoder->bridge == NULL))
+        return 0;
+
+    c_bridge =  to_dsi_bridge(connector->encoder->bridge);
+    dsi_display = c_bridge->display;
+
+	if ((dsi_display == NULL) || (dsi_display->panel == NULL))
+		return -EINVAL;
+
+	panel = dsi_display->panel;
+
+	mutex_lock(&dsi_display->display_lock);
+
+	panel->op_force_screenfp = level;
+	oneplus_force_screenfp=panel->op_force_screenfp;
+	if (!dsi_panel_initialized(panel)) {
+		goto error;
+	}
+
+	rc = dsi_display_clk_ctrl(dsi_display->dsi_clk_handle,
+			DSI_CORE_CLK, DSI_CLK_ON);
+	if (rc) {
+		pr_err("[%s] failed to enable DSI core clocks, rc=%d\n",
+		       dsi_display->name, rc);
+		goto error;
+	}
+
+	rc = dsi_panel_op_set_hbm_mode(panel, level);
+	if (rc)
+		pr_err("unable to set hbm mode\n");
+
+	rc = dsi_display_clk_ctrl(dsi_display->dsi_clk_handle,
+			DSI_CORE_CLK, DSI_CLK_OFF);
+	if (rc) {
+		pr_err("[%s] failed to disable DSI core clocks, rc=%d\n",
+		       dsi_display->name, rc);
+		goto error;
+	}
+error:
+	mutex_unlock(&dsi_display->display_lock);
+	return rc;
+}
+
+
+int dsi_display_get_fp_hbm_mode(struct drm_connector *connector)
+{
+	struct dsi_display *dsi_display = NULL;
+	struct dsi_bridge *c_bridge;
+
+    if ((connector == NULL) || (connector->encoder == NULL)
+            || (connector->encoder->bridge == NULL))
+        return 0;
+
+    c_bridge =  to_dsi_bridge(connector->encoder->bridge);
+    dsi_display = c_bridge->display;
+
+	if ((dsi_display == NULL) || (dsi_display->panel == NULL))
+		return 0;
+
+	return dsi_display->panel->op_force_screenfp;
+}
+
 int dsi_display_set_srgb_mode(struct drm_connector *connector, int level)
 {
     struct dsi_display *dsi_display = NULL;
@@ -7162,8 +7251,16 @@ int dsi_display_set_aod_mode(struct drm_connector *connector, int level)
 		return -EINVAL;
 
 	panel = dsi_display->panel;
-	mutex_lock(&dsi_display->display_lock);
 	panel->aod_mode = level;
+	if (strcmp(dsi_display->panel->name, "samsung s6e3fc2x01 cmd mode dsi panel") == 0){
+		printk(KERN_ERR"dsi_display_set_aod_mode\n");
+	}
+	else
+	{
+		dsi_display->panel->aod_mode=0;
+		return 0;
+	}	
+	mutex_lock(&dsi_display->display_lock);
 	if (!dsi_panel_initialized(panel)) {
 		goto error;
 	}
@@ -7185,6 +7282,7 @@ int dsi_display_set_aod_mode(struct drm_connector *connector, int level)
 		       dsi_display->name, rc);
 		goto error;
 	}
+
 error:
 	mutex_unlock(&dsi_display->display_lock);
 
@@ -7703,6 +7801,10 @@ int dsi_display_unprepare(struct dsi_display *display)
 	SDE_EVT32(SDE_EVTLOG_FUNC_EXIT);
 	return rc;
 }
+struct dsi_display *get_main_display(void) {
+		return primary_display;
+}
+EXPORT_SYMBOL(get_main_display);
 
 static int __init dsi_display_register(void)
 {

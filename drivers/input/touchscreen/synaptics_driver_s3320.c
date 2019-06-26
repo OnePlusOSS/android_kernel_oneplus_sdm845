@@ -44,6 +44,7 @@
 #include <linux/syscalls.h>
 #include <linux/timer.h>
 #include <linux/time.h>
+#include <linux/pm_wakeup.h>
 
 /*modify by morgan.gu for sdm845 */
 #define CONFIG_MSM_RDM_NOTIFY
@@ -64,6 +65,7 @@
 #include "synaptics_baseline.h"
 #include "synaptics_dsx_core.h"
 #include <linux/oneplus/boot_mode.h>
+#include <linux/pm_qos.h>
 /*------------------------------------------------Global Define--------------------------------------------*/
 
 #define TP_UNKNOWN 0
@@ -114,6 +116,9 @@ struct fp_underscreen_info {
     uint16_t x;
     uint16_t y;
 };
+
+#define PM_QOS_VALUE_TP 400
+struct pm_qos_request pm_qos_req_tp;
 
 /******************for Red function*****************/
 #define CONFIG_SYNAPTIC_RED
@@ -361,6 +366,8 @@ static int synaptics_rmi4_i2c_write_word(struct i2c_client* client,
 		unsigned char addr,unsigned short data);
 static int synaptics_mode_change(int mode);
 int tp_single_tap_en(struct synaptics_ts_data *ts, bool enable);
+int opticalfp_irq_handler(struct fp_underscreen_info* tp_info);
+int gf_opticalfp_irq_handler(int event);
 
 #ifdef TPD_USE_EINT
 static irqreturn_t synaptics_irq_thread_fn(int irq, void *dev_id);
@@ -485,6 +492,7 @@ struct synaptics_ts_data {
 	int regulator_avdd_vmin;
 	int regulator_avdd_vmax;
 	int regulator_avdd_current;
+	struct wakeup_source	source;
 
 	uint32_t irq_flags;
 	uint32_t max_x;
@@ -1219,6 +1227,7 @@ static int set_tp_info(struct synaptics_ts_data *ts, uint8_t up_down)
 	tp_info.y = tp_infor[3]<<8|tp_infor[2];
 	tp_info.area_rate = tp_infor[5]<<8|tp_infor[4];
 	tp_info.touch_state = up_down;
+	opticalfp_irq_handler(&tp_info);
 
 	return ret;
 }
@@ -1267,6 +1276,7 @@ static void fp_detect(struct synaptics_ts_data *ts)
 			ts->fp_up_down);
 		/*update tp info*/
 		set_tp_info(ts, 1);
+		gf_opticalfp_irq_handler(1);
 		need_reset = 0;
 			break;
 	case FINGER_UP:
@@ -1277,6 +1287,7 @@ static void fp_detect(struct synaptics_ts_data *ts)
 			ts->fp_up_down);
 		/*update tp info*/
 		set_tp_info(ts, 0);
+		gf_opticalfp_irq_handler(0);
 		if (ts->fp_aod_cnt > 0)
 			need_reset = 1;
 			not_getbase = 0;
@@ -1452,6 +1463,7 @@ static void gesture_judge(struct synaptics_ts_data *ts)
 					ts->fp_up_down);
 				/*update tp info*/
 				set_tp_info(ts, 1);
+				gf_opticalfp_irq_handler(1);
 				not_getbase = 1;
 				need_reset = 0;
 			}
@@ -1467,6 +1479,7 @@ static void gesture_judge(struct synaptics_ts_data *ts)
 					ts->fp_up_down);
 				/*update tp info*/
 				set_tp_info(ts, 0);
+				gf_opticalfp_irq_handler(0);
 			}
 			gesture = UnkownGestrue;
 			break;
@@ -1555,7 +1568,6 @@ static void gesture_judge(struct synaptics_ts_data *ts)
 		input_report_key(ts->input_dev, keyCode, 0);
 		input_sync(ts->input_dev);
 	}else{
-		mutex_lock(&ts->mutex);
 		ret = i2c_smbus_read_i2c_block_data( ts->client, F12_2D_CTRL20, 3, &(reportbuf[0x0]) );
 		ret = reportbuf[2] & 0x20;
 		if(ret == 0)
@@ -1563,7 +1575,6 @@ static void gesture_judge(struct synaptics_ts_data *ts)
 		ret = i2c_smbus_write_i2c_block_data( ts->client, F12_2D_CTRL20, 3, &(reportbuf[0x0]) ); //enable gesture
 		if (ret < 0)
 			TPD_ERR("%s :Failed to write report buffer\n", __func__);
-		mutex_unlock(&ts->mutex);
 	}
 	TPD_DEBUG("%s end!\n", __func__);
 }
@@ -1768,11 +1779,6 @@ void int_touch(void)
 
 	last_status = current_status & 0x02;
 
-	if (ts->project_version == 0x03) {
-		if (ts->en_up_down && ts->in_gesture_mode == 0)
-			fp_detect(ts);
-	}
-
 	if (finger_num == 0/* && last_status && (check_key <= 1)*/) {
 		if (3 == (++prlog_count % 6))
 			TPD_ERR("all finger up\n");
@@ -1802,12 +1808,6 @@ void int_touch(void)
 		if (!ts->en_up_down)
 			tp_baseline_get(ts, false);
 	}
-
-#ifdef SUPPORT_GESTURE
-	if (ts->in_gesture_mode == 1 && ts->is_suspended == 1) {
-		gesture_judge(ts);
-	}
-#endif
 
 INT_TOUCH_END:
 	mutex_unlock(&ts->mutexreport);
@@ -1892,12 +1892,14 @@ static void synaptics_ts_work_func(struct work_struct *work)
 	uint8_t status = 0;
 	uint8_t inte = 0;
 
-    	struct synaptics_ts_data *ts = ts_g;
+	struct synaptics_ts_data *ts = ts_g;
 
+	pm_qos_add_request(&pm_qos_req_tp, PM_QOS_CPU_DMA_LATENCY,
+				PM_QOS_VALUE_TP);
 	if (atomic_read(&ts->is_stop) == 1)
 	{
 		touch_disable(ts);
-		return;
+		goto EXIT;
 	}
 
 	if( ts->enable_remote) {
@@ -1951,7 +1953,22 @@ static void synaptics_ts_work_func(struct work_struct *work)
 
 	if( inte & 0x04 ) {
 
+	if (ts->project_version == 0x03) {
+		if (ts->en_up_down && ts->in_gesture_mode == 0)
+			fp_detect(ts);
+	}
+
+	if (ts->is_suspended == 1) {
+	#ifdef SUPPORT_GESTURE
+		if (ts->in_gesture_mode == 1) {
+			mutex_lock(&ts->mutex);
+			gesture_judge(ts);
+			mutex_unlock(&ts->mutex);
+		}
+	#endif
+	} else {
 		int_touch();
+	}
 	}
 	if( inte & 0x10 ){
 		int_key_report_s3508(ts);
@@ -1962,6 +1979,7 @@ END:
 	//ret = set_changer_bit(ts);
 	touch_enable(ts);
 EXIT:
+	pm_qos_remove_request(&pm_qos_req_tp);
 	return;
 }
 
@@ -1979,8 +1997,10 @@ static enum hrtimer_restart synaptics_ts_timer_func(struct hrtimer *timer)
 static irqreturn_t synaptics_irq_thread_fn(int irq, void *dev_id)
 {
 	struct synaptics_ts_data *ts = (struct synaptics_ts_data *)dev_id;
-    touch_disable(ts);
+	touch_disable(ts);
+	__pm_stay_awake(&ts->source);	//avoid system enter suspend lead to i2c error
 	synaptics_ts_work_func(&ts->report_work);
+	__pm_relax(&ts->source);
 	return IRQ_HANDLED;
 }
 #endif
@@ -2108,6 +2128,7 @@ static ssize_t gesture_switch_write_func(struct file *file, const char __user *p
 		TPD_ERR("%s: read proc input error.\n", __func__);
 		return count;
 	}
+	__pm_stay_awake(&ts->source);	//avoid system enter suspend lead to i2c error
 	mutex_lock(&ts->mutex);
 	ret = sscanf(buf,"%d",&write_flag);
 	gesture_switch = write_flag;
@@ -2130,6 +2151,7 @@ static ssize_t gesture_switch_write_func(struct file *file, const char __user *p
 		}
 	}
 	mutex_unlock(&ts->mutex);
+	__pm_relax(&ts->source);
 
 	return count;
 }
@@ -3963,9 +3985,9 @@ int tp_single_tap_en(struct synaptics_ts_data *ts, bool enable)
 		ret = synaptics_rmi4_i2c_write_byte(ts->client,
 			0x22, 0x01);
 		ret = synaptics_rmi4_i2c_write_byte(ts->client,
-			0x23, 0x32);
+			0x23, 0x1e);
 		ret = synaptics_rmi4_i2c_write_byte(ts->client,
-			0x24, 0x32);
+			0x24, 0x1e);
 		ret = synaptics_rmi4_i2c_write_byte(ts->client,
 			0x25, 0x32);
 		ret = i2c_smbus_write_word_data(ts->client,
@@ -4006,7 +4028,9 @@ static ssize_t tp_gesture_touch_hold_store(struct device *dev,
 {
 	int tmp = 0;
 	int touch_hold_enable = 0;
+	int touchhold_tmp = 0;
 	int ret = 0;
+	int touch_hold_retry = 0;
 	struct synaptics_ts_data *ts = dev_get_drvdata(dev);
 
 	ret = kstrtoint(buf, 10, &tmp);
@@ -4029,27 +4053,43 @@ static ssize_t tp_gesture_touch_hold_store(struct device *dev,
 
 	mutex_lock(&ts->mutex);
 	/* SYNA_F51_CUSTOM_CTRL20_00 0x0428*/
-	ret = synaptics_rmi4_i2c_write_byte(ts->client, 0xff, 0x04);
-	if (ret < 0)
-		TPD_ERR("%s: set page 0x04 fail!\n", __func__);
-	touch_hold_enable = i2c_smbus_read_byte_data(ts->client, 0x2c);
+	while (1) {
+		if((tmp != 1) && (tmp != 0))
+			break;
+		touch_hold_retry ++;
+		ret = synaptics_rmi4_i2c_write_byte(ts->client,
+				0xff, 0x04);
+		if (ret < 0)
+			TPD_ERR("set page first fail!\n");
 
-	if (tmp == 1) {
-		touch_hold_enable = touch_hold_enable | 0x01;
-		ts->en_up_down = 1;
-	} else if (tmp == 0) {
-		touch_hold_enable = touch_hold_enable & 0xfe;
-		ts->en_up_down = 0;
+		touch_hold_enable = i2c_smbus_read_byte_data(ts->client, 0x2c);
+		TPDTM_DMESG("%s:read reg 0x%x\n",
+			__func__, touch_hold_enable);
+
+		if (tmp == 1) {
+			touch_hold_enable = touch_hold_enable | 0x01;
+			ts->en_up_down = 1;
+		} else if (tmp == 0) {
+			touch_hold_enable = touch_hold_enable & 0xfe;
+			ts->en_up_down = 0;
+		}
+		ret = synaptics_rmi4_i2c_write_byte(ts->client,
+			0x2c, touch_hold_enable);
+		if (ret < 0)
+			TPD_ERR("set first fail!\n");
+		touchhold_tmp = i2c_smbus_read_byte_data(ts->client, 0x2c);
+		TPDTM_DMESG("%s:read reg again 0x%x,0x%x,%d\n", __func__,
+			touch_hold_enable, touchhold_tmp, touch_hold_retry);
+		ret = synaptics_rmi4_i2c_write_byte(ts->client,
+			0xff, 0x00);
+		if (ret < 0)
+			TPD_ERR("set page 00 fail!\n");
+		if (touch_hold_enable == touchhold_tmp)
+			break;
+		if (touch_hold_retry == 5)
+			break;
+		msleep(10);
 	}
-
-	ret = synaptics_rmi4_i2c_write_byte(ts->client,
-		0x2c, touch_hold_enable);
-	if (ret < 0)
-		TPD_ERR("%s: set reg fail!\n", __func__);
-
-	ret = synaptics_rmi4_i2c_write_byte(ts->client, 0xff, 0x00);
-	if (ret < 0)
-		TPD_ERR("%s: set page 00 fail!\n", __func__);
 	mutex_unlock(&ts->mutex);
 
 	return size;
@@ -5904,6 +5944,7 @@ static int synaptics_ts_probe(struct i2c_client *client, const struct i2c_device
 		goto exit_createworkqueue_failed;
 	}
 	INIT_DELAYED_WORK(&ts->base_work,tp_baseline_get_work);
+	wakeup_source_init(&ts->source, "tp_syna");
 
 	ret = synaptics_init_panel(ts); /* will also switch back to page 0x04 */
 	if (ret < 0) {
@@ -6157,8 +6198,7 @@ static int synaptics_ts_suspend(struct device *dev)
 			mutex_unlock(&ts->mutex);
 			TPD_ERR("enter gesture mode\n");
 		}
-		set_doze_time(2);
-		//just for fajita
+		//set_doze_time(2);	/*change dozeinterval by firmware*/
 		if (ts->project_version == 0x03) {
 			mutex_lock(&ts->mutex);
 			tp_single_tap_en(ts, true);
@@ -6384,9 +6424,6 @@ static int msm_drm_notifier_callback(
 	if (event != MSM_DRM_EARLY_EVENT_BLANK
 		&& MSM_DRM_EVENT_BLANK != event)
 	return 0;
-	/*add for morgan for EID447*/
-	if (evdata->id != MSM_DRM_PRIMARY_DISPLAY)
-	return 0;
 	if ((evdata) && (evdata->data) && (ts) && (ts->client)) {
 		blank = evdata->data;
 		TPD_ERR("%s blank[%d],event[0x%lx],evdata->id[%d]\n",
@@ -6418,6 +6455,13 @@ static int msm_drm_notifier_callback(
 				TPD_DEBUG("%s:TP suspend end\n", __func__);
 			}
 		}
+		if (ts->project_version == 0x03)
+			if (*blank == MSM_DRM_BLANK_POWERDOWN &&
+				event == MSM_DRM_EVENT_BLANK &&
+				ts->fp_aod_cnt > 0) {
+					set_tp_info(ts, 0);
+					gf_opticalfp_irq_handler(0);
+				}
 	}
 	return 0;
 

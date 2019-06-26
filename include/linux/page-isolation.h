@@ -32,12 +32,20 @@ static inline bool is_migrate_isolate(int migratetype)
 bool has_unmovable_pages(struct zone *zone, struct page *page, int count,
 			 bool skip_hwpoisoned_pages);
 void set_pageblock_migratetype(struct page *page, int migratetype);
+#ifdef CONFIG_DEFRAG_HELPER
+int move_freepages_block(struct zone *zone, struct page *page,
+				int migratetype, int old_mt);
+int move_freepages(struct zone *zone,
+				struct page *start_page, struct page *end_page,
+				int migratetype, int old_mt);
+#else
 int move_freepages_block(struct zone *zone, struct page *page,
 				int migratetype);
 int move_freepages(struct zone *zone,
-			  struct page *start_page, struct page *end_page,
-			  int migratetype);
+				struct page *start_page, struct page *end_page,
+				int migratetype);
 
+#endif
 /*
  * Changes migrate type in [start_pfn, end_pfn) to be MIGRATE_ISOLATE.
  * If specified range includes migrate types other than MOVABLE or CMA,

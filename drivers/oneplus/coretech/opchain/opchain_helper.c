@@ -39,7 +39,8 @@ int (*opc_get_claim_on_cpu_t)(int cpu) = NULL;
 unsigned int (*opc_get_claims_t)(void) = NULL;
 int (*opc_select_path_t)(struct task_struct *cur, struct task_struct *t, int prev_cpu) = NULL;
 long (*opc_cpu_util_t)(long util, int cpu, struct task_struct *t, int op_path) = NULL;
-bool (*opc_fps_check_t)(int lvl) = NULL;
+bool (*opc_fps_check_t)(int lvl);
+
 unsigned int *opc_boost_tl;
 EXPORT_SYMBOL(opc_boost_tl);
 

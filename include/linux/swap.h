@@ -12,6 +12,7 @@
 #include <linux/atomic.h>
 #include <linux/page-flags.h>
 #include <asm/page.h>
+#include <../drivers/oneplus/coretech/memplus/memplus.h>
 
 struct notifier_block;
 
@@ -156,6 +157,11 @@ enum {
 	SWP_SCANNING	= (1 << 12),	/* refcount in scan_swap_map */
 };
 
+#ifdef CONFIG_MEMPLUS
+#define SLOW_BDV 0
+#define FAST_BDV SWP_FAST
+#endif
+
 #define SWAP_CLUSTER_MAX 32UL
 #define COMPACT_CLUSTER_MAX SWAP_CLUSTER_MAX
 #define SWAPFILE_CLUSTER	256
@@ -298,6 +304,7 @@ extern unsigned long nr_free_pagecache_pages(void);
 /* linux/mm/swap.c */
 extern void lru_cache_add(struct page *);
 extern void lru_cache_add_anon(struct page *page);
+extern void lru_cache_add_active_anon(struct page *page);
 extern void lru_cache_add_file(struct page *page);
 extern void lru_add_page_tail(struct page *page, struct page *page_tail,
 			 struct lruvec *lruvec, struct list_head *head);
@@ -385,7 +392,12 @@ extern struct address_space swapper_spaces[];
 #define swap_address_space(entry) (&swapper_spaces[swp_type(entry)])
 extern unsigned long total_swapcache_pages(void);
 extern void show_swap_cache_info(void);
+#ifdef CONFIG_MEMPLUS
+extern int add_to_swap(struct page *, struct list_head *list, unsigned long swap_bdv);
+extern bool is_fast_entry(struct page *);
+#else
 extern int add_to_swap(struct page *, struct list_head *list);
+#endif
 extern int add_to_swap_cache(struct page *, swp_entry_t, gfp_t);
 extern int __add_to_swap_cache(struct page *page, swp_entry_t entry);
 extern void __delete_from_swap_cache(struct page *);
@@ -409,6 +421,9 @@ extern bool is_swap_fast(swp_entry_t entry);
 /* Swap 50% full? Release swapcache more aggressively.. */
 static inline bool vm_swap_full(struct swap_info_struct *si)
 {
+	/* don't bother replace any swapcache only entries */
+	if (vm_memory_plus > 0)
+		return false;
 	/*
 	 * If the swap device is fast, return true
 	 * not to delay swap free.
@@ -421,10 +436,13 @@ static inline bool vm_swap_full(struct swap_info_struct *si)
 
 static inline long get_nr_swap_pages(void)
 {
+	if (vm_memory_plus > 0)
+		return 0;
 	return atomic_long_read(&nr_swap_pages);
 }
 
 extern int sysctl_page_cache_reside_switch;
+extern int sysctl_page_cache_reside_max;
 extern unsigned long uid_lru_size(void);
 extern void uid_lru_cache_add(struct page *page);
 extern void _uid_lru_add_fn(struct page *page, struct lruvec *lruvec);
@@ -435,11 +453,15 @@ extern struct uid_node **alloc_uid_hash_table(void);
 extern unsigned long killed_num;
 extern unsigned long inactive_nr;
 extern unsigned long active_nr;
-extern unsigned long vmpress[];
+extern atomic_t vmpress[];
 extern unsigned long priority_nr[];
 extern unsigned long alloc_slow_nr;
-extern void si_swapinfo(struct sysinfo *);
+#ifdef CONFIG_MEMPLUS
+extern swp_entry_t get_swap_page(unsigned long swap_bdv);
+#else
 extern swp_entry_t get_swap_page(void);
+#endif
+extern void si_swapinfo(struct sysinfo *);
 extern swp_entry_t get_swap_page_of_type(int);
 extern int add_swap_count_continuation(swp_entry_t, gfp_t);
 extern void swap_shmem_alloc(swp_entry_t);
@@ -520,8 +542,11 @@ static inline struct page *lookup_swap_cache(swp_entry_t swp)
 {
 	return NULL;
 }
-
+#ifdef CONFIG_MEMPLUS
+static inline int add_to_swap(struct page *page, struct list_head *list, unsigned long swap_bdv)
+#else
 static inline int add_to_swap(struct page *page, struct list_head *list)
+#endif
 {
 	return 0;
 }

@@ -1166,6 +1166,7 @@ static ssize_t oom_score_adj_write(struct file *file, const char __user *buf,
 	char buffer[PROC_NUMBUF];
 	int oom_score_adj;
 	int err;
+	int prev_adj = -1;
 
 	memset(buffer, 0, sizeof(buffer));
 	if (count > sizeof(buffer) - 1)
@@ -1197,6 +1198,7 @@ static ssize_t oom_score_adj_write(struct file *file, const char __user *buf,
 		goto err_unlock;
 	}
 
+	prev_adj = task->signal->oom_score_adj;
 	task->signal->oom_score_adj = (short)oom_score_adj;
 
 	adj_chain_update_oom_score_adj(task);
@@ -1208,6 +1210,8 @@ static ssize_t oom_score_adj_write(struct file *file, const char __user *buf,
 
 err_unlock:
 	mutex_unlock(&oom_adj_mutex);
+	if (oom_score_adj >= 800)
+		memplus_state_check(oom_score_adj, prev_adj, task);
 	put_task_struct(task);
 
 out:
@@ -1606,6 +1610,77 @@ static const struct file_operations proc_pid_sched_group_id_operations = {
 	.open		= sched_group_id_open,
 	.read		= seq_read,
 	.write		= sched_group_id_write,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+int memplus_type_enabled __read_mostly;
+static ssize_t
+memplus_type_write(struct file *file, const char __user *buf,
+	    size_t count, loff_t *offset)
+{
+	struct inode *inode = file_inode(file);
+	struct task_struct *p;
+	char buffer[PROC_NUMBUF];
+	int type_id, err;
+
+	memset(buffer, 0, sizeof(buffer));
+	if (count > sizeof(buffer) - 1)
+		count = sizeof(buffer) - 1;
+	if (copy_from_user(buffer, buf, count)) {
+		err = -EFAULT;
+		goto out;
+	}
+
+	err = kstrtoint(strstrip(buffer), 0, &type_id);
+	if (err)
+		goto out;
+
+	p = get_proc_task(inode);
+	if (!p)
+		return -ESRCH;
+
+	if (type_id >= TYPE_END || type_id < 0)
+		return -EINVAL;
+
+	/* don't have concurrent usage now, skip lock protect */
+	p->signal->memplus_type = type_id;
+
+	if (type_id == TYPE_WILL_NEED)
+		memplus_state_check(0, 0, p);
+	else if ((type_id & MEMPLUS_TYPE_MASK) < TYPE_SYS_IGNORE)
+		memplus_state_check(p->signal->oom_score_adj, 0, p);
+
+	put_task_struct(p);
+
+out:
+	return err < 0 ? err : count;
+}
+
+static int memplus_type_show(struct seq_file *m, void *v)
+{
+	struct inode *inode = m->private;
+	struct task_struct *p;
+
+	p = get_proc_task(inode);
+	if (!p)
+		return -ESRCH;
+
+	seq_printf(m, "%d\n", p->signal->memplus_type);
+
+	put_task_struct(p);
+
+	return 0;
+}
+
+static int memplus_type_open(struct inode *inode, struct file *filp)
+{
+	return single_open(filp, memplus_type_show, inode);
+}
+
+static const struct file_operations proc_pid_memplus_type_operations = {
+	.open		= memplus_type_open,
+	.read		= seq_read,
+	.write		= memplus_type_write,
 	.llseek		= seq_lseek,
 	.release	= single_release,
 };
@@ -3216,6 +3291,7 @@ static const struct pid_entry tgid_base_stuff[] = {
 	REG("sched_init_task_load",      S_IRUGO|S_IWUSR, proc_pid_sched_init_task_load_operations),
 	REG("sched_group_id",      S_IRUGO|S_IWUGO, proc_pid_sched_group_id_operations),
 #endif
+	REG("memplus_type",      S_IRUGO|S_IWUGO, proc_pid_memplus_type_operations),
 #ifdef CONFIG_SCHED_DEBUG
 	REG("sched",      S_IRUGO|S_IWUSR, proc_pid_sched_operations),
 #endif

@@ -27,6 +27,8 @@
 #include <linux/mm_inline.h>
 #include <linux/page_ext.h>
 #include <linux/page_owner.h>
+#include <linux/hugetlb_inline.h>
+#include <asm/tlbflush.h>
 
 #include "internal.h"
 
@@ -925,6 +927,10 @@ const char * const vmstat_text[] = {
 	"nr_zone_active_anon",
 	"nr_zone_inactive_file",
 	"nr_zone_active_file",
+#ifdef CONFIG_MEMPLUS
+	"nr_zone_inactive_anon_swpcache",
+	"nr_zone_active_anon_swpcache",
+#endif
 	"nr_zone_unevictable",
 	"nr_zone_write_pending",
 	"nr_mlock",
@@ -947,12 +953,18 @@ const char * const vmstat_text[] = {
 #endif
 	"nr_uid_lru",
 	"nr_free_cma",
-
+#ifdef CONFIG_DEFRAG_HELPER
+	"nr_free_defrag",
+#endif
 	/* Node-based counters */
 	"nr_inactive_anon",
 	"nr_active_anon",
 	"nr_inactive_file",
 	"nr_active_file",
+#ifdef CONFIG_MEMPLUS
+	"nr_inactive_anon_swpcache",
+	"nr_active_anon_swpcache",
+#endif
 	"nr_unevictable",
 	"nr_isolated_anon",
 	"nr_isolated_file",
@@ -997,6 +1009,8 @@ const char * const vmstat_text[] = {
 
 	"pgfault",
 	"pgmajfault",
+	"pg_add_to_swap",
+	"pg_swap_write",
 	"pglazyfreed",
 
 	"pgrefill",
@@ -1152,6 +1166,9 @@ static void walk_zones_in_node(struct seq_file *m, pg_data_t *pgdat,
 #endif
 
 #ifdef CONFIG_PROC_FS
+#ifdef CONFIG_DEFRAG_HELPER
+#include <../drivers/oneplus/coretech/defrag/defrag_helper.h>
+#endif
 static void frag_show_print(struct seq_file *m, pg_data_t *pgdat,
 						struct zone *zone)
 {
@@ -1170,6 +1187,9 @@ static int frag_show(struct seq_file *m, void *arg)
 {
 	pg_data_t *pgdat = (pg_data_t *)arg;
 	walk_zones_in_node(m, pgdat, false, frag_show_print);
+#ifdef CONFIG_DEFRAG_HELPER
+	print_fp_statistics(m);
+#endif
 	return 0;
 }
 
@@ -1179,6 +1199,11 @@ static void pagetypeinfo_showfree_print(struct seq_file *m,
 	int order, mtype;
 
 	for (mtype = 0; mtype < MIGRATE_TYPES; mtype++) {
+#ifdef CONFIG_DEFRAG_HELPER
+		if ((mtype == MIGRATE_UNMOVABLE_DEFRAG_POOL) &&
+					likely(!alloc_status))
+			continue;
+#endif
 		seq_printf(m, "Node %4d, zone %8s, type %12s ",
 					pgdat->node_id,
 					zone->name,
@@ -1248,7 +1273,16 @@ static void pagetypeinfo_showblockcount_print(struct seq_file *m,
 	/* Print counts */
 	seq_printf(m, "Node %d, zone %8s ", pgdat->node_id, zone->name);
 	for (mtype = 0; mtype < MIGRATE_TYPES; mtype++)
+#ifdef CONFIG_DEFRAG_HELPER
+	{
+		if ((mtype == MIGRATE_UNMOVABLE_DEFRAG_POOL) &&
+						likely(!alloc_status))
+			continue;
+#endif
 		seq_printf(m, "%12lu ", count[mtype]);
+#ifdef CONFIG_DEFRAG_HELPER
+	}
+#endif
 	seq_putc(m, '\n');
 }
 
@@ -1260,7 +1294,16 @@ static int pagetypeinfo_showblockcount(struct seq_file *m, void *arg)
 
 	seq_printf(m, "\n%-23s", "Number of blocks type ");
 	for (mtype = 0; mtype < MIGRATE_TYPES; mtype++)
+#ifdef CONFIG_DEFRAG_HELPER
+	{
+		if ((mtype == MIGRATE_UNMOVABLE_DEFRAG_POOL) &&
+						likely(!alloc_status))
+			continue;
+#endif
 		seq_printf(m, "%12s ", migratetype_names[mtype]);
+#ifdef CONFIG_DEFRAG_HELPER
+	}
+#endif
 	seq_putc(m, '\n');
 	walk_zones_in_node(m, pgdat, false,
 		pagetypeinfo_showblockcount_print);
@@ -1452,6 +1495,45 @@ static int zoneinfo_show(struct seq_file *m, void *arg)
 	walk_zones_in_node(m, pgdat, false, zoneinfo_show_print);
 	return 0;
 }
+extern atomic64_t vm_high_priority_ns;
+extern atomic64_t vm_low_priority_ns;
+extern atomic64_t vm_all_priority_ns;
+extern atomic64_t vm_high_priority_count;
+extern atomic64_t vm_all_priority_count;
+extern atomic64_t vm_high_priority_ns_1ms;
+extern atomic64_t vm_low_priority_ns_1ms;
+extern atomic64_t vm_all_priority_ns_1ms;
+extern atomic64_t vm_high_priority_count_1ms;
+extern atomic64_t vm_all_priority_count_1ms;
+extern atomic64_t kswapd_total_ns;
+extern atomic64_t kswapd_sleep_ns;
+extern atomic64_t kswapd_run_ns;
+
+static int lr_stat_show(struct seq_file *m, void *arg)
+{
+	seq_printf(m, "LazyReclaim stat\n");
+	seq_printf(m, "All: all %lu (cnt %lu) high %lu (cnt %lu) low %lu\n"
+			, atomic64_read(&vm_all_priority_ns)
+			, atomic64_read(&vm_all_priority_count)
+			, atomic64_read(&vm_high_priority_ns)
+			, atomic64_read(&vm_high_priority_count)
+			, atomic64_read(&vm_low_priority_ns)
+			);
+	seq_printf(m, ">1ms: all %lu (cnt %lu) high %lu (cnt %lu) low %lu\n"
+			, atomic64_read(&vm_all_priority_ns_1ms)
+			, atomic64_read(&vm_all_priority_count_1ms)
+			, atomic64_read(&vm_high_priority_ns_1ms)
+			, atomic64_read(&vm_high_priority_count_1ms)
+			, atomic64_read(&vm_low_priority_ns_1ms)
+			);
+	seq_printf(m, "kswapd: total %lu run %lu sleep %lu\n"
+			, atomic64_read(&kswapd_total_ns)
+			, atomic64_read(&kswapd_run_ns)
+			, atomic64_read(&kswapd_sleep_ns)
+			);
+	seq_putc(m, '\n');
+	return 0;
+}
 
 static const struct seq_operations zoneinfo_op = {
 	.start	= frag_start, /* iterate over all zones. The same as in
@@ -1460,10 +1542,21 @@ static const struct seq_operations zoneinfo_op = {
 	.stop	= frag_stop,
 	.show	= zoneinfo_show,
 };
+static const struct seq_operations lr_stat_op = {
+	.start	= frag_start, /* iterate over all zones. The same as in
+			       * fragmentation. */
+	.next	= frag_next,
+	.stop	= frag_stop,
+	.show	= lr_stat_show,
+};
 
 static int zoneinfo_open(struct inode *inode, struct file *file)
 {
 	return seq_open(file, &zoneinfo_op);
+}
+static int lr_stat_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &lr_stat_op);
 }
 
 static const struct file_operations proc_zoneinfo_file_operations = {
@@ -1472,7 +1565,145 @@ static const struct file_operations proc_zoneinfo_file_operations = {
 	.llseek		= seq_lseek,
 	.release	= seq_release,
 };
+static const struct file_operations proc_lr_stat_file_operations = {
+	.open		= lr_stat_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= seq_release,
+};
 
+#ifdef CONFIG_MEMPLUS
+#define PSS_SHIFT 12
+static void pss_pte_entry(pte_t *pte, unsigned long addr,
+		struct mm_walk *walk)
+{
+	long *pss = walk->private;
+	struct vm_area_struct *vma = walk->vma;
+	struct page *page = NULL;
+	int n, i;
+
+	if (!pte_present(*pte))
+		return;
+
+	page = vm_normal_page(vma, addr, *pte);
+
+	if (!page)
+		return;
+
+	if (!PageAnon(page))
+		return;
+
+	n = 1 << compound_order(page);
+	for (i = 0; i < n; i++, page++) {
+		int mapcount = page_mapcount(page);
+
+		if (mapcount >= 2) {
+			*pss += (PAGE_SIZE << PSS_SHIFT) / mapcount;
+		} else {
+			*pss += PAGE_SIZE << PSS_SHIFT;
+		}
+	}
+
+}
+
+static int pss_pte_range(pmd_t *pmd, unsigned long addr, unsigned long end,
+			   struct mm_walk *walk)
+{
+	struct vm_area_struct *vma = walk->vma;
+	pte_t *pte;
+	spinlock_t *ptl;
+
+	if (pmd_trans_unstable(pmd))
+		return 0;
+	/*
+	 * The mmap_sem held all the way back in m_start() is what
+	 * keeps khugepaged out of here and from collapsing things
+	 * in here.
+	 */
+	pte = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
+	for (; addr != end; pte++, addr += PAGE_SIZE)
+		pss_pte_entry(pte, addr, walk);
+	pte_unmap_unlock(pte - 1, ptl);
+	cond_resched();
+	return 0;
+}
+
+static long __get_uid_pss(struct task_struct *tsk)
+{
+	long anon_pss = 0;
+	struct vm_area_struct *vma;
+	struct mm_struct *mm;
+	struct mm_walk pss_walk = {
+		.pmd_entry = pss_pte_range,
+		.private = &anon_pss,
+	};
+
+	if (tsk->flags & PF_KTHREAD)
+		return 0;
+
+	mm = get_task_mm(tsk);
+	if (!mm)
+		return 0;
+
+	pss_walk.mm = mm;
+	if (!down_read_trylock(&mm->mmap_sem))
+		goto out;
+
+	for (vma = mm->mmap; vma; vma = vma->vm_next) {
+		if (is_vm_hugetlb_page(vma))
+			continue;
+
+		if (vma->vm_file)
+			continue;
+
+		walk_page_range(vma->vm_start, vma->vm_end, &pss_walk);
+	}
+	flush_tlb_mm(mm);
+	up_read(&mm->mmap_sem);
+out:
+	mmput(mm);
+
+	return anon_pss >> (10 + PSS_SHIFT);
+}
+
+long get_frontapp_pss_rcu(void)
+{
+	struct task_struct *tsk;
+	long anon_pss = 0;
+
+	rcu_read_lock();
+	for_each_process(tsk) {
+		rcu_read_unlock();
+		if (tsk->signal->memplus_type != TYPE_WILL_NEED)
+			continue;
+
+		anon_pss += __get_uid_pss(tsk);
+		rcu_read_lock();
+	}
+	rcu_read_unlock();
+
+	return anon_pss;
+}
+
+long get_uid_pss(uid_t uid, bool system_pss)
+{
+	struct task_struct *tsk;
+	long anon_pss = 0;
+	uid_t _uid;
+
+	for_each_process(tsk) {
+		_uid = __task_cred(tsk)->user->uid.val;
+		if (system_pss && _uid >= uid)
+			continue;
+		else if (!system_pss && _uid != uid)
+			continue;
+
+		anon_pss += __get_uid_pss(tsk);
+	}
+
+	return anon_pss;
+}
+#endif
 static void uid_lru_info_show_print(struct seq_file *m, pg_data_t *pgdat)
 {
 	int i;
@@ -1870,6 +2101,7 @@ static int __init setup_vmstat(void)
 	proc_create("zoneinfo", S_IRUGO, NULL, &proc_zoneinfo_file_operations);
 	proc_create("uid_lru_info", 0444, NULL,
 				&proc_uid_lru_info_file_operations);
+	proc_create("lr_stat", S_IRUGO, NULL, &proc_lr_stat_file_operations);
 #endif
 	return 0;
 }

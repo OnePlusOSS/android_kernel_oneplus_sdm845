@@ -19,6 +19,7 @@
 #include <linux/power/oem_external_fg.h>
 #include <linux/pm_qos.h>
 #include <linux/proc_fs.h>
+#include <linux/moduleparam.h>
 
 #define BYTE_OFFSET			2
 #define BYTES_TO_WRITE		16
@@ -50,6 +51,8 @@ struct fastchg_device_info {
 	bool fast_chg_allow;
 	bool firmware_already_updated;
 	bool n76e_present;
+	bool is_mcl_verion;
+	int mcu_reset_ahead;
 	int erase_count;
 	int addr_low;
 	int addr_high;
@@ -62,6 +65,7 @@ struct fastchg_device_info {
 	int usb_sw_2_gpio;
 	int ap_clk;
 	int ap_data;
+	int dash_enhance;
 	int dashchg_fw_ver_count;
 
 	struct power_supply		*batt_psy;
@@ -82,6 +86,7 @@ struct fastchg_device_info *fastchg_di;
 
 static unsigned char *dashchg_firmware_data;
 static struct i2c_client *mcu_client;
+
 
 static ssize_t n76e_exist_read(struct file *p_file,
 	char __user *puser_buf, size_t count, loff_t *p_offset)
@@ -108,6 +113,62 @@ static void init_n76e_exist_node(void)
 		pr_info("Failed to register n76e node\n");
 	}
 }
+#define PAGESIZE 512
+
+static ssize_t enhance_exist_read(struct file *file,
+			char __user *user_buf, size_t count, loff_t *ppos)
+{
+	int ret = 0;
+	char page[PAGESIZE];
+	struct fastchg_device_info *di = fastchg_di;
+
+	if (!di)
+		return ret;
+	ret = sprintf(page, "%d", di->dash_enhance);
+	ret = simple_read_from_buffer(user_buf,
+			count, ppos, page, strlen(page));
+	return ret;
+}
+
+static ssize_t enhance_exist_write(struct file *file,
+			const char __user *buffer, size_t count, loff_t *ppos)
+{
+	struct fastchg_device_info *di = fastchg_di;
+	int ret = 0;
+	char buf[4] = {0};
+
+	if (count > 2)
+		return count;
+
+	if (copy_from_user(buf, buffer, count)) {
+		pr_err("%s: write proc dash error.\n", __func__);
+		return count;
+	}
+
+	if (-1 == sscanf(buf, "%d", &ret)) {
+		pr_err("%s sscanf error\n", __func__);
+		return count;
+	}
+	if (!di)
+		return count;
+	if ((ret == 0) || (ret == 1))
+		di->dash_enhance = ret;
+	pr_info("%s:the dash enhance is = %d\n",
+			__func__, di->dash_enhance);
+	return count;
+}
+
+static const struct file_operations enhance_exist_operations = {
+	.read = enhance_exist_read,
+	.write = enhance_exist_write,
+};
+
+static void init_enhance_dash_exist_node(void)
+{
+	if (!proc_create("enhance_dash", 0644, NULL,
+			 &enhance_exist_operations))
+		pr_err("Failed to register enhance dash node\n");
+}
 
 //for mcu_data irq delay issue 2017.10.14@Infi
 extern void msm_cpuidle_set_sleep_disable(bool disable);
@@ -129,8 +190,17 @@ void set_mcu_en_gpio_value(int value)
 
 void mcu_en_reset(void)
 {
-	if (gpio_is_valid(fastchg_di->mcu_en_gpio))
+	if (gpio_is_valid(fastchg_di->mcu_en_gpio)) {
 		gpio_direction_output(fastchg_di->mcu_en_gpio, 1);
+		/* @bsp 2018/09/05 FAT-4556 fix the audio heaset pop
+		 * issue when shutdown
+		 */
+		if (audio_adapter_flag) {
+			usleep_range(10000, 10001);
+			gpio_direction_output(fastchg_di->mcu_en_gpio, 0);
+			pr_info("mcu reset ahead when audio adaptor present!\n");
+		}
+	}
 }
 
 void mcu_en_gpio_set(int value)
@@ -511,6 +581,12 @@ static int bq27541_set_fast_chg_allow(bool enable)
 	return 0;
 }
 
+static void clean_enhache_status(void)
+{
+	if (fastchg_di)
+		fastchg_di->dash_enhance = 0;
+}
+
 static bool bq27541_get_fast_chg_allow(void)
 {
 	if (fastchg_di)
@@ -560,6 +636,15 @@ static bool fastchg_is_usb_switch_on(void)
 	return false;
 }
 
+static bool enhance_dash_on(void)
+{
+	if (fastchg_di)
+		return fastchg_di->dash_enhance;
+
+	return false;
+}
+
+
 int dash_get_adapter_update_status(void)
 {
 	if (!fastchg_di)
@@ -586,6 +671,8 @@ static struct external_battery_gauge fastcharge_information  = {
 		get_fastchg_firmware_already_updated,
 	.is_usb_switch_on = fastchg_is_usb_switch_on,
 	.get_adapter_update = dash_get_adapter_update_status,
+	.is_enhance_dash = enhance_dash_on,
+	.clean_enhache = clean_enhache_status,
 };
 
 static struct notify_dash_event *notify_event;
@@ -960,6 +1047,8 @@ void op_adapter_init(struct op_adapter_chip *chip)
 #define DASH_NOTIFY_INVALID_DATA_CMD	_IO(DASH_IOC_MAGIC, 12)
 #define DASH_NOTIFY_REQUEST_IRQ			_IO(DASH_IOC_MAGIC, 13)
 #define DASH_NOTIFY_UPDATE_DASH_PRESENT	_IOW(DASH_IOC_MAGIC, 14, int)
+#define DASH_NOTIFY_UPDATE_ADAPTER_INFO	_IOW(DASH_IOC_MAGIC, 15, int)
+
 
 static long  dash_dev_ioctl(struct file *filp, unsigned int cmd,
 		unsigned long arg)
@@ -1003,6 +1092,7 @@ static long  dash_dev_ioctl(struct file *filp, unsigned int cmd,
 				di->fast_switch_to_normal = false;
 				di->fast_normal_to_warm = false;
 				di->fast_chg_ing = false;
+				di->dash_enhance = 0;
 				pr_err("fastchg stop unexpectly, switch off fastchg\n");
 				switch_mode_to_normal();
 				del_timer(&di->watchdog);
@@ -1043,14 +1133,18 @@ static long  dash_dev_ioctl(struct file *filp, unsigned int cmd,
 					jiffies + msecs_to_jiffies(15000));
 			dash_write(di, ALLOW_DATA);
 			break;
+		case DASH_NOTIFY_UPDATE_ADAPTER_INFO:
+				di->dash_enhance = arg;
+			break;
+
 		case DASH_NOTIFY_BAD_CONNECTED:
 		case DASH_NOTIFY_NORMAL_TEMP_FULL:
 			if (arg == DASH_NOTIFY_NORMAL_TEMP_FULL + 1) {
 				pr_err("fastchg full, switch off fastchg, set usb_sw_gpio 0\n");
+				di->fast_switch_to_normal = true;
 				switch_mode_to_normal();
 				del_timer(&di->watchdog);
 			} else if (arg == DASH_NOTIFY_NORMAL_TEMP_FULL + 2) {
-				di->fast_switch_to_normal = true;
 				bq27541_data->set_allow_reading(true);
 				di->fast_chg_started = false;
 				di->fast_chg_allow = false;
@@ -1058,6 +1152,8 @@ static long  dash_dev_ioctl(struct file *filp, unsigned int cmd,
 				notify_check_usb_suspend(true, false);
 				oneplus_notify_pmic_check_charger_present();
 				__pm_relax(&di->fastchg_wake_lock);
+			} else if (arg == DASH_NOTIFY_NORMAL_TEMP_FULL + 3) {
+				op_switch_normal_set();
 			}
 			break;
 		case DASH_NOTIFY_TEMP_OVER:
@@ -1190,6 +1286,8 @@ static int dash_parse_dt(struct fastchg_device_info *di)
 			"microchip,mcu-en-gpio", 0, &flags);
 	di->n76e_present = of_property_read_bool(dev_node,
 			"op,n76e_support");
+	di->is_mcl_verion = of_property_read_bool(dev_node,
+		"op,mcl_verion");
 	rc = of_property_read_u32(dev_node,
 			"op,fw-erase-count", &di->erase_count);
 	if (rc < 0)
@@ -1330,6 +1428,65 @@ static void check_n76e_support(struct fastchg_device_info *di)
 	}
 
 }
+
+static void check_enhance_support(struct fastchg_device_info *di)
+{
+	if (di->is_mcl_verion) {
+		init_enhance_dash_exist_node();
+		pr_info("enhance dash exist\n");
+	} else {
+		pr_info("enhance dash not exist\n");
+	}
+
+}
+
+
+/* @bsp 2018/09/05 FAT-4556 fix the audio heaset pop issue when shutdown*/
+static int set_mcu_reset_ahead(const char *val, struct kernel_param *kp)
+{
+	unsigned long reset_value = 0;
+	int ret = 0;
+
+	if (!audio_adapter_flag) {
+		pr_info("audio_adapter_flag = %d,return!\n",
+				audio_adapter_flag);
+		return 0;
+	}
+
+	ret = kstrtoul(val, 10, &reset_value);
+	if (ret)
+		return ret;
+
+	if (!reset_value) {
+		fastchg_di->mcu_reset_ahead = 0;
+		return 0;
+	}
+
+	if (reset_value) {
+		pr_info("reset_value:%lu\n",
+				reset_value);
+		mcu_en_reset();
+		fastchg_di->mcu_reset_ahead = reset_value;
+	}
+
+	return 0;
+}
+
+static int get_mcu_reset_status(char *buffer, struct kernel_param *kp)
+{
+	int cnt = 0;
+
+	cnt = snprintf(buffer, sizeof(char), "%d",
+				fastchg_di->mcu_reset_ahead);
+	pr_debug("mcu reset ahead status:%d\n",
+				fastchg_di->mcu_reset_ahead);
+
+	return cnt;
+}
+
+module_param_call(mcu_reset, set_mcu_reset_ahead,
+				get_mcu_reset_status, NULL, 0644);
+
 static int dash_probe(struct i2c_client *client, const struct i2c_device_id *id)
 {
 	struct fastchg_device_info *di;
@@ -1395,6 +1552,7 @@ static int dash_probe(struct i2c_client *client, const struct i2c_device_id *id)
 
 	mcu_init(di);
 	check_n76e_support(di);
+	check_enhance_support(di);
 	fastcharge_information_register(&fastcharge_information);
 	pr_info("dash_probe success\n");
 
@@ -1431,6 +1589,11 @@ static int dash_remove(struct i2c_client *client)
 static void dash_shutdown(struct i2c_client *client)
 {
 	usb_sw_gpio_set(0);
+	/* @bsp 2018/09/05 FAT-4556 fix the audio heaset pop
+	 * issue when shutdown
+	 */
+	if (audio_adapter_flag && fastchg_di->mcu_reset_ahead)
+		return;
 	mcu_en_reset();
 }
 

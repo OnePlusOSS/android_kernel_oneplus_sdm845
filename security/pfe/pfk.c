@@ -198,6 +198,8 @@ static inline bool pfk_is_ready(void)
  */
 static struct inode *pfk_bio_get_inode(const struct bio *bio)
 {
+	struct address_space *mapping;
+
 	if (!bio)
 		return NULL;
 	if (!bio_has_data((struct bio *)bio))
@@ -217,11 +219,11 @@ static struct inode *pfk_bio_get_inode(const struct bio *bio)
 		return inode;
 	}
 
-	if (!page_mapping(bio->bi_io_vec->bv_page))
+	mapping = page_mapping(bio->bi_io_vec->bv_page);
+	if (!mapping)
 		return NULL;
 
-	if (!bio->bi_io_vec->bv_page->mapping->host)
-
+	if (!mapping->host)
 		return NULL;
 
 	return bio->bi_io_vec->bv_page->mapping->host;

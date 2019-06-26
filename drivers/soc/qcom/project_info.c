@@ -21,10 +21,11 @@
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/pinctrl/machine.h>
 
-
 static struct component_info component_info_desc[COMPONENT_MAX];
 static struct kobject *project_info_kobj;
 static struct project_info *project_info_desc;
+static struct dump_info *dp_info;
+
 static struct kobject *component_info;
 static ssize_t project_info_get(struct device *dev,
     struct device_attribute *attr, char *buf);
@@ -49,6 +50,42 @@ static DEVICE_ATTR(platform_id, 0444, project_info_get, NULL);
 static DEVICE_ATTR(serialno, 0444, project_info_get, NULL);
 static DEVICE_ATTR(feature_id, 0444, project_info_get, NULL);
 static DEVICE_ATTR(aboard_id, 0444, project_info_get, NULL);
+
+void save_dump_reason_to_smem(char *info, char *function_name)
+{
+    int strl = 0, strl1 = 0;
+    static int flag = 0;
+
+    /* Make sure save_dump_reason_to_smem() is not called
+     infinite times by panic()  during DDR bit flip crash etc */
+    if (flag > 1)
+	return;
+
+    dp_info = smem_alloc(SMEM_DUMP_INFO,
+        sizeof(struct dump_info), 0,
+        SMEM_ANY_HOST_FLAG);
+
+    if (IS_ERR_OR_NULL(dp_info))
+        pr_err("%s: get dp_info failure\n", __func__);
+    else {
+        pr_err("%s: info : %s\n",__func__, info);
+
+        strl = strlen(info)+1;
+        strl1 = strlen(function_name)+1;
+        strl = strl <  DUMP_REASON_SIZE ? strl: DUMP_REASON_SIZE;
+        strl1 = strl1 <  DUMP_REASON_SIZE ? strl1: DUMP_REASON_SIZE ;
+        if ((strlen(dp_info->dump_reason) + strl) < DUMP_REASON_SIZE)
+                strncat(dp_info->dump_reason,info,strl);
+
+        if (function_name != NULL && ((strlen(dp_info->dump_reason) + strl1) < DUMP_REASON_SIZE)) {
+                strncat(dp_info->dump_reason,function_name,strl1);
+                strncat(dp_info->dump_reason,"\n",1);
+	}
+    }
+    pr_err("\r%s: dump_reason : %s strl=%d function caused panic :%s strl1=%d \n", __func__,
+                           dp_info->dump_reason, strl, function_name, strl1);
+    flag++;
+}
 
 uint8 get_secureboot_fuse_status(void)
 {
@@ -510,7 +547,6 @@ uint32 get_hw_version(void)
     return 0;
 }
 
-
 int __init init_project_info(void)
 {
     static bool project_info_init_done;
@@ -596,9 +632,29 @@ int __init init_project_info(void)
         break;
     case 35:
         snprintf(mainboard_version, sizeof(mainboard_version), "%s %s",
+        project_info_desc->project_name, "DVT2nd");
+        break;
+    case 41:
+        snprintf(mainboard_version, sizeof(mainboard_version), "%s %s",
         project_info_desc->project_name, "PVT");
         break;
-    case 55:
+    case 42:
+        snprintf(mainboard_version, sizeof(mainboard_version), "%s %s",
+        project_info_desc->project_name, "PVT2nd");
+        break;
+    case 43:
+        snprintf(mainboard_version, sizeof(mainboard_version), "%s %s",
+        project_info_desc->project_name, "PVT-1");
+        break;
+    case 44:
+        snprintf(mainboard_version, sizeof(mainboard_version), "%s %s",
+        project_info_desc->project_name, "PVTSpec");
+        break;
+    case 45:
+        snprintf(mainboard_version, sizeof(mainboard_version), "%s %s",
+        project_info_desc->project_name, "MPSpec");
+        break;
+	case 55:
         snprintf(mainboard_version, sizeof(mainboard_version), "%s %s",
         project_info_desc->project_name, "DVTUSB30");
         break;
@@ -623,22 +679,23 @@ int __init init_project_info(void)
     }
 
     snprintf(rf_version, sizeof(rf_version),  " %d",project_info_desc->rf_v1);
-    push_component_info(RF_VERSION, rf_version, mainboard_manufacture);
+	push_component_info(RF_VERSION, rf_version, mainboard_manufacture);
 
-    get_ddr_manufacture_name();
-
-    if (totalram_pages > 6*(1<<18))
-        ddr_size = 8;
-    else if (totalram_pages > 5*(1<<18))
-        ddr_size = 6;
-    else if (totalram_pages > 4*(1<<18))
-        ddr_size = 5;
-    else if (totalram_pages > 3*(1<<18))
-        ddr_size = 4;
-    else if (totalram_pages > 2*(1<<18))
-        ddr_size = 3;
-    else if (totalram_pages > 1*(1<<18))
-        ddr_size = 2;
+	get_ddr_manufacture_name();
+	if (totalram_pages > 9*(1<<18))
+		ddr_size = 10;
+	else if (totalram_pages > 6*(1<<18))
+		ddr_size = 8;
+	else if (totalram_pages > 5*(1<<18))
+		ddr_size = 6;
+	else if (totalram_pages > 4*(1<<18))
+		ddr_size = 5;
+	else if (totalram_pages > 3*(1<<18))
+		ddr_size = 4;
+	else if (totalram_pages > 2*(1<<18))
+		ddr_size = 3;
+	else if (totalram_pages > 1*(1<<18))
+		ddr_size = 2;
 
     snprintf(ddr_version, sizeof(ddr_version), "size_%dG_r_%d_c_%d",
         ddr_size, project_info_desc->ddr_row,

@@ -195,7 +195,6 @@ static int pppolac_recv(struct sock *sk_udp, struct sk_buff *skb)
 		sock_hold(sk_udp);
 		retval = sk_receive_skb(sk_udp, skb, 0);
 		return (retval >> 1);
-
 }
 
 static struct sk_buff_head delivery_queue;

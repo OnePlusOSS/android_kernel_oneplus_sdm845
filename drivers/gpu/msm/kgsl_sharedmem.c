@@ -769,6 +769,14 @@ int kgsl_cache_range_op(struct kgsl_memdesc *memdesc, uint64_t offset,
 }
 EXPORT_SYMBOL(kgsl_cache_range_op);
 
+#ifdef CONFIG_MEMPLUS
+long kgsl_total_size(void)
+{
+	return atomic_long_read(&kgsl_driver.stats.page_alloc);
+}
+EXPORT_SYMBOL(kgsl_total_size);
+#endif
+
 void kgsl_memdesc_init(struct kgsl_device *device,
 			struct kgsl_memdesc *memdesc, uint64_t flags)
 {

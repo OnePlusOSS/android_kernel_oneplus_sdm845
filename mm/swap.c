@@ -407,6 +407,14 @@ static void __lru_cache_add(struct page *page)
 	put_cpu_var(lru_add_pvec);
 }
 
+#ifdef CONFIG_MEMPLUS
+void lru_cache_add_active_anon(struct page *page)
+{
+	SetPageActive(page);
+	__lru_cache_add(page);
+}
+#endif
+
 /**
  * lru_cache_add: add a page to the page lists
  * @page: the page to add

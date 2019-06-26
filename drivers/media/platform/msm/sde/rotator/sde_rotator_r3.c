@@ -680,10 +680,9 @@ static void sde_hw_rotator_disable_irq(struct sde_hw_rotator *rot)
 	}
 }
 
-static int sde_hw_rotator_halt_vbif_xin_client(void)
+static void sde_hw_rotator_halt_vbif_xin_client(void)
 {
 	struct sde_mdp_vbif_halt_params halt_params;
-	int rc = 0;
 
 	memset(&halt_params, 0, sizeof(struct sde_mdp_vbif_halt_params));
 	halt_params.xin_id = XIN_SSPP;
@@ -691,7 +690,6 @@ static int sde_hw_rotator_halt_vbif_xin_client(void)
 	halt_params.bit_off_mdp_clk_ctrl =
 		MMSS_VBIF_NRT_VBIF_CLK_FORCE_CTRL0_XIN0;
 	sde_mdp_halt_vbif_xin(&halt_params);
-	rc |=  halt_params.xin_timeout;
 
 	memset(&halt_params, 0, sizeof(struct sde_mdp_vbif_halt_params));
 	halt_params.xin_id = XIN_WRITEBACK;
@@ -699,10 +697,6 @@ static int sde_hw_rotator_halt_vbif_xin_client(void)
 	halt_params.bit_off_mdp_clk_ctrl =
 		MMSS_VBIF_NRT_VBIF_CLK_FORCE_CTRL0_XIN1;
 	sde_mdp_halt_vbif_xin(&halt_params);
-	rc |=  halt_params.xin_timeout;
-
-	return rc;
-
 }
 
 /**
@@ -2010,10 +2004,7 @@ static u32 sde_hw_rotator_wait_done_regdma(
 
 			_sde_hw_rotator_dump_status(rot, &ubwcerr);
 
-			spin_unlock_irqrestore(&rot->rotisr_lock, flags);
-
-			if (ubwcerr || abort ||
-					sde_hw_rotator_halt_vbif_xin_client()) {
+			if (ubwcerr || abort) {
 				/*
 				 * Perform recovery for ROT SSPP UBWC decode
 				 * error.
@@ -2021,15 +2012,16 @@ static u32 sde_hw_rotator_wait_done_regdma(
 				 * - reset TS logic so all pending rotation
 				 *   in hw queue got done signalled
 				 */
+				spin_unlock_irqrestore(&rot->rotisr_lock,
+						flags);
 				if (!sde_hw_rotator_reset(rot, ctx))
 					status = REGDMA_INCOMPLETE_CMD;
 				else
 					status = ROT_ERROR_BIT;
+				spin_lock_irqsave(&rot->rotisr_lock, flags);
 			} else {
 				status = ROT_ERROR_BIT;
 			}
-
-			spin_lock_irqsave(&rot->rotisr_lock, flags);
 		} else {
 			if (rc == 1)
 				SDEROT_WARN(
