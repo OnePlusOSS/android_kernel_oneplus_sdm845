@@ -55,6 +55,8 @@
 #include <linux/shm.h>
 #include <linux/kcov.h>
 
+#include <linux/adj_chain.h>
+
 #include "sched/tune.h"
 
 #include <asm/uaccess.h>
@@ -62,6 +64,9 @@
 #include <asm/pgtable.h>
 #include <asm/mmu_context.h>
 
+#ifdef CONFIG_TPD
+#include <linux/oem/tpd.h>
+#endif
 static void __unhash_process(struct task_struct *p, bool group_dead)
 {
 	nr_threads--;
@@ -70,6 +75,7 @@ static void __unhash_process(struct task_struct *p, bool group_dead)
 		detach_pid(p, PIDTYPE_PGID);
 		detach_pid(p, PIDTYPE_SID);
 
+		adj_chain_detach(p);
 		list_del_rcu(&p->tasks);
 		list_del_init(&p->sibling);
 		__this_cpu_dec(process_counts);
@@ -161,6 +167,10 @@ static void delayed_put_task_struct(struct rcu_head *rhp)
 {
 	struct task_struct *tsk = container_of(rhp, struct task_struct, rcu);
 
+#ifdef CONFIG_TPD
+	tpd_tglist_del(tsk);
+#endif
+
 	perf_event_delayed_put(tsk);
 	trace_sched_process_free(tsk);
 	put_task_struct(tsk);
@@ -171,6 +181,14 @@ void release_task(struct task_struct *p)
 {
 	struct task_struct *leader;
 	int zap_leader;
+#ifdef CONFIG_OPLUS_FEATURE_FUSE_FS_SHORTCIRCUIT
+	if (p->fpack) {
+		if (p->fpack->iname)
+			__putname(p->fpack->iname);
+		kfree(p->fpack);
+		p->fpack = NULL;
+	}
+#endif /* CONFIG_OPLUS_FEATURE_FUSE_FS_SHORTCIRCUIT */
 repeat:
 	/* don't need to get the RCU readlock here - the process is dead and
 	 * can't be modifying its own credentials. But shut RCU-lockdep up */
@@ -189,6 +207,8 @@ repeat:
 	 * group, and the leader is zombie, then notify the
 	 * group leader's parent process. (if it wants notification.)
 	 */
+	if (p && p->nn && p->nn->is_valid)
+		p->nn->is_valid = false;
 	zap_leader = 0;
 	leader = p->group_leader;
 	if (leader != p && thread_group_empty(leader)

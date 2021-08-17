@@ -1491,14 +1491,9 @@ static int hamachi_rx(struct net_device *dev)
 							    hmp->rx_buf_sz,
 							    PCI_DMA_FROMDEVICE);
 				/* Call copy + cksum if available. */
-#if 1 || USE_IP_COPYSUM
 				skb_copy_to_linear_data(skb,
 					hmp->rx_skbuff[entry]->data, pkt_len);
 				skb_put(skb, pkt_len);
-#else
-				memcpy(skb_put(skb, pkt_len), hmp->rx_ring_dma
-					+ entry*sizeof(*desc), pkt_len);
-#endif
 				pci_dma_sync_single_for_device(hmp->pci_dev,
 							       leXX_to_cpu(hmp->rx_ring[entry].addr),
 							       hmp->rx_buf_sz,

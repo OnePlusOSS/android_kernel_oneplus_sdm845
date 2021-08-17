@@ -50,7 +50,7 @@
 		clock-names = "core_clk", "iface_clk", "bus_aggr_clk",
 			"utmi_clk", "sleep_clk", "cfg_ahb_clk", "xo";
 
-		qcom,core-clk-rate = <133333333>;
+		qcom,core-clk-rate = <200000000>;
 		qcom,core-clk-rate-hs = <66666667>;
 
 		resets = <&clock_gcc GCC_USB30_PRIM_BCR>;
@@ -64,22 +64,26 @@
 			<MSM_BUS_MASTER_USB3 MSM_BUS_SLAVE_IPA_CFG 0 0>,
 			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_USB3 0 0>,
 			<MSM_BUS_MASTER_USB3
-				MSM_BUS_SLAVE_EBI_CH0 240000 700000>,
+				MSM_BUS_SLAVE_EBI_CH0 2500000 2500000>,
 			<MSM_BUS_MASTER_USB3
-				MSM_BUS_SLAVE_IPA_CFG 0 2400>,
-			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_USB3 0 40000>;
+				MSM_BUS_SLAVE_IPA_CFG 2400 2400>,
+			<MSM_BUS_MASTER_AMPSS_M0 MSM_BUS_SLAVE_USB3 40000 40000>;
 
+		qcom,default-bus-vote = <1>; /* use nominal bus voting */
 		dwc3@a600000 {
 			compatible = "snps,dwc3";
 			reg = <0x0a600000 0xcd00>;
 			interrupts = <0 133 0>;
-			usb-phy = <&qusb_phy0>, <&usb_qmp_dp_phy>;
+			usb-phy = <&qusb_phy0>, <&usb_nop_phy>;
 			tx-fifo-resize;
 			linux,sysdev_is_parent;
 			snps,disable-clk-gating;
 			snps,has-lpm-erratum;
 			snps,hird-threshold = /bits/ 8 <0x10>;
 			snps,usb3_lpm_capable;
+			xhci-imod-value = <160>;
+			qcom,pm-qos-latency= <62>;
+			maximum-speed = "high-speed";
 			usb-core-id = <0>;
 		};
 

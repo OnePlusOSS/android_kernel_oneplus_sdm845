@@ -51,7 +51,6 @@ static inline void flush_tlb_mm(struct mm_struct *mm)
 {
 	BUG_ON(mm == &init_mm); /* Should never happen */
 
-#if 1 || defined(CONFIG_SMP)
 	/* Except for very small threads, flushing the whole TLB is
 	 * faster than using __flush_tlb_range.  The pdtlb and pitlb
 	 * instructions are very slow because of the TLB broadcast.
@@ -59,20 +58,6 @@ static inline void flush_tlb_mm(struct mm_struct *mm)
 	 * on PA 2.0 systems.
 	 */
 	flush_tlb_all();
-#else
-	/* FIXME: currently broken, causing space id and protection ids
-	 * to go out of sync, resulting in faults on userspace accesses.
-	 * This approach needs further investigation since running many
-	 * small applications (e.g., GCC testsuite) is faster on HP-UX.
-	 */
-	if (mm) {
-		if (mm->context != 0)
-			free_sid(mm->context);
-		mm->context = alloc_sid();
-		if (mm == current->active_mm)
-			load_context(mm->context);
-	}
-#endif
 }
 
 static inline void flush_tlb_page(struct vm_area_struct *vma,

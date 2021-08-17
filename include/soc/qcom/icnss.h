@@ -155,4 +155,5 @@ extern int icnss_get_curr_therm_state(struct device *dev,
 					unsigned long *thermal_state);
 extern int icnss_idle_restart(struct device *dev);
 extern int icnss_idle_shutdown(struct device *dev);
+extern void cnss_set_fw_version(u32 version, u32 ext);
 #endif /* _ICNSS_WLAN_H_ */

@@ -689,9 +689,6 @@ static irqreturn_t atp_interrupt(int irq, void *dev_instance)
 		int i;
 		for (i = 0; i < 6; i++)
 			write_reg_byte(ioaddr, PAR0 + i, dev->dev_addr[i]);
-#if 0 && defined(TIMED_CHECKER)
-		mod_timer(&lp->timer, jiffies + TIMED_CHECKER);
-#endif
 	}
 
 	/* Tell the adapter that it can go back to using the output line as IRQ. */

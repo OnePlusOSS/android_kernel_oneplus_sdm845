@@ -53,6 +53,7 @@ enum color_fmts {
 	 *          + max(Extradata, Y_Stride * 8), 4096)
 	 */
 	COLOR_FMT_NV12,
+
 	/* Venus NV21:
 	 * YUV 4:2:0 image with a plane of 8 bit Y samples followed
 	 * by an interleaved V/U plane containing 8 bit 2x2 subsampled

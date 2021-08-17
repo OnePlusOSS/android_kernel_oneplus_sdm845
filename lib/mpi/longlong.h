@@ -315,26 +315,8 @@ extern UDItype __udiv_qrnnd(UDItype *, UDItype, UDItype, UDItype);
 	     "rM" ((USItype)(bh)), \
 	     "rM" ((USItype)(al)), \
 	     "rM" ((USItype)(bl)))
-#if 0 && defined(_PA_RISC1_1)
-/* xmpyu uses floating point register which is not allowed in Linux kernel. */
-#define umul_ppmm(wh, wl, u, v) \
-do { \
-	union {UDItype __ll; \
-	struct {USItype __h, __l; } __i; \
-	} __xx; \
-	__asm__ ("xmpyu %1,%2,%0" \
-	: "=*f" (__xx.__ll) \
-	: "*f" ((USItype)(u)), \
-	       "*f" ((USItype)(v))); \
-	(wh) = __xx.__i.__h; \
-	(wl) = __xx.__i.__l; \
-} while (0)
-#define UMUL_TIME 8
-#define UDIV_TIME 60
-#else
 #define UMUL_TIME 40
 #define UDIV_TIME 80
-#endif
 #if 0 /* #ifndef LONGLONG_STANDALONE */
 #define udiv_qrnnd(q, r, n1, n0, d) \
 do { USItype __r; \

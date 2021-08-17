@@ -70,8 +70,25 @@
 #include <linux/pid_namespace.h>
 #include <linux/security.h>
 #include <linux/spinlock.h>
+
+// neiltsai, 20161115, add for oemlogkit used
+#include <linux/proc_fs.h>
+// neiltsai end
+
+#ifdef CONFIG_ANDROID_BINDER_IPC_32BIT
+#define BINDER_IPC_32BIT 1
+#endif
+
+#include <uapi/linux/android/binder.h>
 #include "binder_alloc.h"
 #include "binder_trace.h"
+/* curtis, 20180111, opchain*/
+#include <../drivers/oneplus/coretech/uxcore/opchain_helper.h>
+
+#ifdef CONFIG_OP_FREEZER
+// add for op freeze manager
+#include <oneplus/op_freezer/op_freezer.h>
+#endif
 
 static HLIST_HEAD(binder_deferred_list);
 static DEFINE_MUTEX(binder_deferred_lock);
@@ -3000,6 +3017,14 @@ static void binder_transaction(struct binder_proc *proc,
 	int t_debug_id = atomic_inc_return(&binder_last_id);
 	char *secctx = NULL;
 	u32 secctx_sz = 0;
+#ifdef CONFIG_OP_FREEZER
+	// add for op freeze manager
+	char buf_data[INTERFACETOKEN_BUFF_SIZE];
+	size_t buf_data_size;
+	char buf[INTERFACETOKEN_BUFF_SIZE] = {0};
+	int i = 0;
+	int j = 0;
+#endif
 
 	e = binder_transaction_log_add(&binder_transaction_log);
 	e->debug_id = t_debug_id;
@@ -3115,6 +3140,20 @@ static void binder_transaction(struct binder_proc *proc,
 			return_error_line = __LINE__;
 			goto err_dead_binder;
 		}
+
+#ifdef CONFIG_OP_FREEZER
+		// add for op freeze manager
+		if (!(tr->flags & TF_ONE_WAY) //report sync binder call
+			&& target_proc
+			&& (task_uid(target_proc->tsk).val > MIN_USERAPP_UID)
+			&& (proc->pid != target_proc->pid)
+			&& is_frozen_tg(target_proc->tsk)) {
+			op_freezer_report(SYNC_BINDER,
+					task_tgid_nr(proc->tsk), task_uid(target_proc->tsk).val,
+					"SYNC_BINDER", -1);
+		}
+#endif
+
 		e->to_node = target_node->debug_id;
 		if (security_binder_transaction(proc->tsk,
 						target_proc->tsk) < 0) {
@@ -3324,6 +3363,39 @@ static void binder_transaction(struct binder_proc *proc,
 		return_error_line = __LINE__;
 		goto err_bad_offset;
 	}
+
+#ifdef CONFIG_OP_FREEZER
+	// add for op freeze manager
+		if ((tr->flags & TF_ONE_WAY) //report async binder call
+			&& target_proc
+			&& (task_uid(target_proc->tsk).val > MIN_USERAPP_UID)
+			&& (proc->pid != target_proc->pid)
+			&& is_frozen_tg(target_proc->tsk)) {
+			buf_data_size = tr->data_size > INTERFACETOKEN_BUFF_SIZE ?
+			INTERFACETOKEN_BUFF_SIZE : tr->data_size;
+			if (!copy_from_user(buf_data, (char *)tr->data.ptr.buffer, buf_data_size)) {
+				//1.skip first PARCEL_OFFSET bytes (useless data)
+				//2.make sure the invalid address issue is not occurring(j =PARCEL_OFFSET+1, j+=2)
+				//3.java layer uses 2 bytes char. And only the first bytes has the data.(p+=2)
+				if (buf_data_size > PARCEL_OFFSET) {
+					char *p = (char *)(buf_data) + PARCEL_OFFSET;
+
+					j = PARCEL_OFFSET + 1;
+					while (i < INTERFACETOKEN_BUFF_SIZE && j < buf_data_size && *p != '\0') {
+						buf[i++] = *p;
+						j += 2;
+						p += 2;
+					}
+					if (i == INTERFACETOKEN_BUFF_SIZE)
+						buf[i-1] = '\0';
+				}
+				op_freezer_report(ASYNC_BINDER,
+						task_tgid_nr(proc->tsk), task_uid(target_proc->tsk).val,
+						buf, tr->code);
+			}
+		}
+#endif
+
 	off_start_offset = ALIGN(tr->data_size, sizeof(void *));
 	buffer_offset = off_start_offset;
 	off_end_offset = off_start_offset + tr->offsets_size;
@@ -3331,6 +3403,8 @@ static void binder_transaction(struct binder_proc *proc,
 	sg_buf_end_offset = sg_buf_offset + extra_buffers_size -
 		ALIGN(secctx_sz, sizeof(u64));
 	off_min = 0;
+	binder_alloc_pass_binder_buffer(&target_proc->alloc,
+					t->buffer, tr->data_size);
 	for (buffer_offset = off_start_offset; buffer_offset < off_end_offset;
 	     buffer_offset += sizeof(binder_size_t)) {
 		struct binder_object_header *hdr;
@@ -5937,6 +6011,71 @@ static int binder_state_show(struct seq_file *m, void *unused)
 	return 0;
 }
 
+#ifdef CONFIG_OP_FREEZER
+// add for op freeze manager
+static void op_freezer_check_uid_proc_status(struct binder_proc *proc)
+{
+	struct rb_node *n = NULL;
+	struct binder_thread *thread = NULL;
+	int uid = -1;
+	struct binder_transaction *btrans = NULL;
+	bool empty = true;
+
+	//check binder_thread/transaction_stack/binder_proc ongoing transaction
+	binder_inner_proc_lock(proc);
+	for (n = rb_first(&proc->threads); n != NULL; n = rb_next(n)) {
+		thread = rb_entry(n, struct binder_thread, rb_node);
+		empty = binder_worklist_empty_ilocked(&thread->todo);
+
+		if (thread->task != NULL) {
+			// has "todo" binder thread in worklist?
+			uid = task_uid(thread->task).val;
+			if (!empty) {
+				binder_inner_proc_unlock(proc);
+				op_freezer_report(FROZEN_TRANS, -1, uid, "FROZEN_TRANS_THREAD", -1);
+				return;
+			}
+
+			// has transcation in transaction_stack?
+			btrans = thread->transaction_stack;
+			if (btrans) {
+				spin_lock(&btrans->lock);
+				if (btrans->to_thread == thread) {
+					// only report incoming binder call
+					spin_unlock(&btrans->lock);
+					binder_inner_proc_unlock(proc);
+					op_freezer_report(FROZEN_TRANS, -1, uid, "FROZEN_TRANS_STACK", -1);
+					return;
+				}
+				spin_unlock(&btrans->lock);
+			}
+		}
+	}
+
+	// has "todo" binder proc in worklist
+	empty = binder_worklist_empty_ilocked(&proc->todo);
+	if (proc->tsk != NULL && !empty) {
+		uid = task_uid(proc->tsk).val;
+		binder_inner_proc_unlock(proc);
+		op_freezer_report(FROZEN_TRANS, -1, uid, "FROZEN_TRANS_PROC", -1);
+		return;
+	}
+	binder_inner_proc_unlock(proc);
+}
+
+void op_freezer_check_frozen_transcation(uid_t uid)
+{
+	struct binder_proc *proc;
+
+	mutex_lock(&binder_procs_lock);
+	hlist_for_each_entry(proc, &binder_procs, proc_node) {
+		if (proc != NULL && (task_uid(proc->tsk).val == uid))
+			op_freezer_check_uid_proc_status(proc);
+	}
+	mutex_unlock(&binder_procs_lock);
+}
+#endif
+
 static int binder_stats_show(struct seq_file *m, void *unused)
 {
 	struct binder_proc *proc;
@@ -6074,6 +6213,57 @@ static int __init init_binder_device(const char *name)
 	return ret;
 }
 
+// neiltsai, 20161115, add for oemlogkit used
+static int proc_state_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, binder_state_show, NULL);
+}
+
+static int proc_transactions_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, binder_transactions_show, NULL);
+}
+
+static int proc_transaction_log_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, binder_transaction_log_show,
+		&binder_transaction_log);
+}
+
+
+static const struct file_operations proc_state_operations = {
+	.open       = proc_state_open,
+	.read       = seq_read,
+	.llseek     = seq_lseek,
+	.release    = single_release,
+};
+
+static const struct file_operations proc_transactions_operations = {
+	.open       = proc_transactions_open,
+	.read       = seq_read,
+	.llseek     = seq_lseek,
+	.release    = single_release,
+};
+
+static const struct file_operations proc_transaction_log_operations = {
+	.open       = proc_transaction_log_open,
+	.read       = seq_read,
+	.llseek     = seq_lseek,
+	.release    = single_release,
+};
+
+static int binder_proc_init(void)
+{
+	proc_create("proc_state", 0444, NULL,
+			&proc_state_operations);
+	proc_create("proc_transactions", 0444, NULL,
+			&proc_transactions_operations);
+	proc_create("proc_transaction_log", 0444, NULL,
+			&proc_transaction_log_operations);
+	return 0;
+}
+// neiltsai end
+
 static int __init binder_init(void)
 {
 	int ret;
@@ -6138,6 +6328,9 @@ static int __init binder_init(void)
 		if (ret)
 			goto err_init_binder_device_failed;
 	}
+	// neiltsai, 20161115, add for oemlogkit used
+		binder_proc_init();
+	// neiltsai end
 
 	return ret;
 

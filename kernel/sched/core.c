@@ -97,6 +97,7 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/sched.h>
 #include "walt.h"
+#include <linux/oem/cpufreq_bouncing.h>
 
 ATOMIC_NOTIFIER_HEAD(load_alert_notifier_head);
 
@@ -6071,6 +6072,7 @@ int sched_isolate_cpu(int cpu)
 	calc_load_migrate(rq);
 	update_max_interval();
 	sched_update_group_capacities(cpu);
+	cb_reset(cpu, start_time);
 
 out:
 	cpu_maps_update_done();
@@ -6094,6 +6096,7 @@ int sched_unisolate_cpu_unlocked(int cpu)
 	if (trace_sched_isolate_enabled())
 		start_time = sched_clock();
 
+	cb_reset(cpu, start_time);
 	if (!cpu_isolation_vote[cpu]) {
 		ret_code = -EINVAL;
 		goto out;
@@ -6456,7 +6459,7 @@ static int init_rootdomain(struct root_domain *rd)
 
 	init_max_cpu_capacity(&rd->max_cpu_capacity);
 
-	rd->max_cap_orig_cpu = rd->min_cap_orig_cpu = -1;
+	rd->max_cap_orig_cpu = rd->min_cap_orig_cpu = rd->mid_cap_orig_cpu = -1;
 
 	return 0;
 

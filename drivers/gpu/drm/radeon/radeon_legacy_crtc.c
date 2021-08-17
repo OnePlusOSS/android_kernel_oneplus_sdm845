@@ -837,12 +837,6 @@ static void radeon_set_pll(struct drm_crtc *crtc, struct drm_display_mode *mode)
 			  post_divider);
 
 		pll_ref_div   = reference_div;
-#if defined(__powerpc__) && (0) /* TODO */
-		/* apparently programming this otherwise causes a hang??? */
-		if (info->MacModel == RADEON_MAC_IBOOK)
-			pll_fb_post_div = 0x000600ad;
-		else
-#endif
 			pll_fb_post_div     = (feedback_div | (post_div->bitvalue << 16));
 
 		htotal_cntl    = mode->htotal & 0x7;

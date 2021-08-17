@@ -269,6 +269,9 @@ struct fuse_file_lock {
 #define FUSE_HANDLE_KILLPRIV	(1 << 19)
 #define FUSE_POSIX_ACL		(1 << 20)
 #define FUSE_PASSTHROUGH	(1 << 21)
+#ifdef CONFIG_OPLUS_FEATURE_FUSE_FS_SHORTCIRCUIT
+#define FUSE_SHORTCIRCUIT	(1 << 30)
+#endif /* CONFIG_OPLUS_FEATURE_FUSE_FS_SHORTCIRCUIT */
 
 /**
  * CUSE INIT request/reply flags

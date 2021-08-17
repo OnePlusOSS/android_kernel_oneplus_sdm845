@@ -1,4 +1,4 @@
-obj-$(CONFIG_WIL6210) += wil6210.o
+# obj-$(CONFIG_WIL6210) += wil6210.o
 
 wil6210-y := main.o
 wil6210-y += netdev.o

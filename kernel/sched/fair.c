@@ -37,6 +37,15 @@
 #include "walt.h"
 #include <trace/events/sched.h>
 
+/* Curtis, 20180111, ux realm*/
+#include <../drivers/oneplus/coretech/uxcore/opchain_helper.h>
+
+#define opc_claim_bit_test(claim, cpu) (claim & ((1 << cpu) | (1 << (cpu + num_present_cpus()))))
+
+#ifdef CONFIG_TPD
+#include <linux/oem/tpd.h>
+#endif
+
 #ifdef CONFIG_SCHED_WALT
 
 static inline bool task_fits_max(struct task_struct *p, int cpu);
@@ -651,7 +660,6 @@ static struct sched_entity *__pick_next_entity(struct sched_entity *se)
 	return rb_entry(next, struct sched_entity, run_node);
 }
 
-#ifdef CONFIG_SCHED_DEBUG
 struct sched_entity *__pick_last_entity(struct cfs_rq *cfs_rq)
 {
 	struct rb_node *last = rb_last(&cfs_rq->tasks_timeline);
@@ -688,7 +696,6 @@ int sched_proc_update_handler(struct ctl_table *table, int write,
 
 	return 0;
 }
-#endif
 
 /*
  * delta /= w
@@ -5006,6 +5013,9 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	int task_new = flags & ENQUEUE_WAKEUP_NEW;
 #endif
 
+/* Curtis, 20180111, ux realm*/
+	opc_task_switch(true, cpu_of(rq), p, 0);
+
 #ifdef CONFIG_SCHED_WALT
 	p->misfit = !task_fits_max(p, rq->cpu);
 #endif
@@ -5100,6 +5110,8 @@ static void dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	struct sched_entity *se = &p->se;
 	int task_sleep = flags & DEQUEUE_SLEEP;
 
+	/* Curtis, 20180111, ux realm*/
+	opc_task_switch(false, cpu_of(rq), p, rq->clock);
 	for_each_sched_entity(se) {
 		cfs_rq = cfs_rq_of(se);
 		dequeue_entity(cfs_rq, se, flags);
@@ -6970,6 +6982,8 @@ struct find_best_target_env {
 	bool need_idle;
 	int placement_boost;
 	bool avoid_prev_cpu;
+	/* Curtis, 20180111, ux realm*/
+	int op_path;
 };
 
 #ifdef CONFIG_SCHED_WALT
@@ -7044,7 +7058,11 @@ static int start_cpu(struct task_struct *p, bool boosted,
 		start_cpu = rd->min_cap_orig_cpu;
 	else
 		start_cpu = rd->max_cap_orig_cpu;
-
+#ifdef CONFIG_TPD
+	if ((is_dynamic_tpd_task(p) || is_tpd_task(p)) && is_tpd_enable()) {
+		start_cpu = tpd_suggested_cpu(p, start_cpu);
+}
+#endif
 	return walt_start_cpu(start_cpu);
 }
 
@@ -7072,7 +7090,7 @@ static inline int find_best_target(struct task_struct *p, int *backup_cpu,
 	unsigned int active_cpus_count = 0;
 	int isolated_candidate = -1;
 	int prev_cpu = task_cpu(p);
-
+	cpumask_t new_allowed_cpus;
 	*backup_cpu = -1;
 
 	schedstat_inc(p->se.statistics.nr_wakeups_fbt_attempts);
@@ -7096,6 +7114,14 @@ static inline int find_best_target(struct task_struct *p, int *backup_cpu,
 
 	/* Scan CPUs in all SDs */
 	sg = sd->groups;
+	cpumask_copy(&new_allowed_cpus, &p->cpus_allowed);
+#ifdef CONFIG_TPD
+	if (is_tpd_enable() && is_tpd_task(p)) {
+		tpd_mask(p, &new_allowed_cpus);
+	}
+	cpumask_copy(&p->cpus_allowed, &new_allowed_cpus);
+#endif
+
 	do {
 		cpumask_t search_cpus;
 		bool do_rotate = false, avoid_prev_cpu = false;
@@ -7132,7 +7158,9 @@ retry:
 			 * so prev_cpu will receive a negative bias due to the double
 			 * accounting. However, the blocked utilization may be zero.
 			 */
-			wake_util = cpu_util_wake(i, p);
+			/* Curtis, 20180111, ux realm*/
+			wake_util = opc_cpu_util(cpu_util_wake(i, p),
+						i, p, fbt_env->op_path);
 			new_util = wake_util + task_util(p);
 			spare_cap = capacity_orig_of(i) - wake_util;
 
@@ -7578,6 +7606,13 @@ static int select_energy_cpu_brute(struct task_struct *p, int prev_cpu, int sync
 	struct find_best_target_env fbt_env;
 	u64 start_t = 0;
 	int fastpath = 0;
+	/* Curtis, 20180111, ux realm*/
+	bool is_uxtop = is_opc_task(p, UT_FORE);
+
+	fbt_env.op_path = opc_select_path(current, p, prev_cpu);
+
+	if (fbt_env.op_path >= 0)
+		prev_cpu = fbt_env.op_path;
 
 	if (trace_sched_task_util_enabled())
 		start_t = sched_clock();
@@ -7588,6 +7623,8 @@ static int select_energy_cpu_brute(struct task_struct *p, int prev_cpu, int sync
 #ifdef CONFIG_CGROUP_SCHEDTUNE
 	boosted = schedtune_task_boost(p) > 0;
 	prefer_idle = schedtune_prefer_idle(p) > 0;
+	/* Curtis, 20180111, ux realm*/
+	boosted |= (fbt_env.op_path >= 4);
 #else
 	boosted = get_sysctl_sched_cfs_boost() > 0;
 	prefer_idle = 0;
@@ -7609,8 +7646,9 @@ static int select_energy_cpu_brute(struct task_struct *p, int prev_cpu, int sync
 
 	if (sysctl_sched_sync_hint_enable && sync) {
 		int cpu = smp_processor_id();
-
-		if (bias_to_waker_cpu(p, cpu, rtg_target)) {
+		/* Curtis, 20180111, ux realm*/
+		if (bias_to_waker_cpu(p, cpu, rtg_target) &&
+			(!is_uxtop || cpu >= FIRST_BIG_CORE)) {
 			schedstat_inc(p->se.statistics.nr_wakeups_secb_sync);
 			schedstat_inc(this_rq()->eas_stats.secb_sync);
 			target_cpu = cpu;
@@ -7625,7 +7663,12 @@ static int select_energy_cpu_brute(struct task_struct *p, int prev_cpu, int sync
 		goto out;
 	}
 
+	/* Curtis, 20180111, ux realm*/
+	if (fbt_env.op_path >= 0)
+		sd = rcu_dereference(per_cpu(sd_ea, fbt_env.op_path));
+	else
 	sd = rcu_dereference(per_cpu(sd_ea, prev_cpu));
+
 	if (!sd) {
 		target_cpu = prev_cpu;
 		goto out;
@@ -7683,13 +7726,22 @@ static int select_energy_cpu_brute(struct task_struct *p, int prev_cpu, int sync
 			p->state == TASK_WAKING)
 			delta = task_util(p);
 #endif
-		/* Not enough spare capacity on previous cpu */
+#ifdef CONFIG_TPD
+		if (__cpu_overutilized(prev_cpu, delta) || (is_tpd_enable() && is_tpd_task(p))) {
+			schedstat_inc(p->se.statistics.nr_wakeups_secb_insuff_cap);
+			schedstat_inc(this_rq()->eas_stats.secb_insuff_cap);
+			target_cpu = next_cpu;
+			goto out;
+		}
+
+#else
 		if (__cpu_overutilized(prev_cpu, delta)) {
 			schedstat_inc(p->se.statistics.nr_wakeups_secb_insuff_cap);
 			schedstat_inc(this_rq()->eas_stats.secb_insuff_cap);
 			target_cpu = next_cpu;
 			goto out;
 		}
+#endif
 
 		/* Check if EAS_CPU_NXT is a more energy efficient CPU */
 		if (select_energy_cpu_idx(&eenv) != EAS_CPU_PRV) {
@@ -7712,7 +7764,7 @@ out:
 	trace_sched_task_util(p, next_cpu, backup_cpu, target_cpu, sync,
 			      fbt_env.need_idle, fastpath,
 			      fbt_env.placement_boost, rtg_target ?
-			      cpumask_first(rtg_target) : -1, start_t);
+			      cpumask_first(rtg_target) : -1, start_t, boosted);
 	return target_cpu;
 }
 
@@ -8355,6 +8407,8 @@ enum group_type {
 #define LBF_IGNORE_BIG_TASKS 0x100
 #define LBF_IGNORE_PREFERRED_CLUSTER_TASKS 0x200
 #define LBF_MOVED_RELATED_THREAD_GROUP_TASK 0x400
+#define LBF_IGNORE_UX_TOP 0x800
+#define LBF_IGNORE_SLAVE 0xC00
 
 struct lb_env {
 	struct sched_domain	*sd;
@@ -8474,6 +8528,20 @@ static inline int migrate_degrades_locality(struct task_struct *p,
 }
 #endif
 
+#ifdef CONFIG_TPD
+static inline bool can_migrate_tpd_task(struct task_struct *p,
+		int src_cpu, int dst_cpu)
+{
+	if (is_tpd_enable() && is_tpd_task(p)) {
+		/*avoid task migrate to wrong tpd suggested cpu*/
+		if (tpd_check(p, dst_cpu))
+			return false;
+	}
+
+	return true;
+}
+#endif
+
 /*
  * can_migrate_task - may task p from runqueue rq be migrated to this_cpu?
  */
@@ -8493,6 +8561,11 @@ int can_migrate_task(struct task_struct *p, struct lb_env *env)
 	 */
 	if (throttled_lb_pair(task_group(p), env->src_cpu, env->dst_cpu))
 		return 0;
+
+#ifdef CONFIG_TPD
+	if (!can_migrate_tpd_task(p, env->src_cpu, env->dst_cpu))
+		return 0;
+#endif
 
 	if (!cpumask_test_cpu(env->dst_cpu, tsk_cpus_allowed(p))) {
 		int cpu;
@@ -8551,6 +8624,13 @@ int can_migrate_task(struct task_struct *p, struct lb_env *env)
 		!task_fits_max(p, env->dst_cpu))
 		return 0;
 #endif
+
+	/* Curtis, 20180111, ux realm*/
+	if (env->flags & LBF_IGNORE_UX_TOP && is_opc_task(p, UT_FORE))
+		return 0;
+
+	if (env->flags & LBF_IGNORE_SLAVE && p->utask_slave)
+		return 0;
 
 	if (task_running(env->src_rq, p)) {
 		schedstat_inc(p->se.statistics.nr_failed_migrations_running);
@@ -8642,7 +8722,8 @@ static int detach_tasks(struct lb_env *env)
 	unsigned long load;
 	int detached = 0;
 	int orig_loop = env->loop;
-
+	/* Curtis, 20180111, ux realm*/
+	int src_claim = opc_get_claim_on_cpu(env->src_cpu);
 	lockdep_assert_held(&env->src_rq->lock);
 
 	if (env->imbalance <= 0)
@@ -8650,9 +8731,14 @@ static int detach_tasks(struct lb_env *env)
 
 	if (!same_cluster(env->dst_cpu, env->src_cpu))
 		env->flags |= LBF_IGNORE_PREFERRED_CLUSTER_TASKS;
-
-	if (cpu_capacity(env->dst_cpu) < cpu_capacity(env->src_cpu))
+	/* Curtis, 20180111, ux realm*/
+	if (cpu_capacity(env->dst_cpu) < cpu_capacity(env->src_cpu)) {
 		env->flags |= LBF_IGNORE_BIG_TASKS;
+		if (src_claim == 1)
+			env->flags |= LBF_IGNORE_UX_TOP | LBF_IGNORE_SLAVE;
+		else if (src_claim == -1)
+			env->flags |= LBF_IGNORE_SLAVE;
+	}
 
 redo:
 	while (!list_empty(tasks)) {
@@ -8731,6 +8817,8 @@ next:
 		tasks = &env->src_rq->cfs_tasks;
 		env->flags &= ~(LBF_IGNORE_BIG_TASKS |
 				LBF_IGNORE_PREFERRED_CLUSTER_TASKS);
+		if (env->flags & LBF_IGNORE_SLAVE)
+			env->flags &= ~LBF_IGNORE_SLAVE;
 		env->loop = orig_loop;
 		goto redo;
 	}
@@ -10358,6 +10446,19 @@ no_move:
 
 		if (need_active_balance(&env)) {
 			raw_spin_lock_irqsave(&busiest->lock, flags);
+
+			/*
+			 * The CPUs are marked as reserved if tasks
+			 * are pushed/pulled from other CPUs. In that case,
+			 * bail out from the load balancer.
+			 */
+			if (is_reserved(this_cpu) ||
+			    is_reserved(cpu_of(busiest))) {
+				raw_spin_unlock_irqrestore(&busiest->lock,
+							   flags);
+				*continue_balancing = 0;
+				goto out;
+			}
 
 			/*
 			 * The CPUs are marked as reserved if tasks

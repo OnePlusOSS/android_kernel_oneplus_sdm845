@@ -190,10 +190,6 @@ static void arm_tb(void)
 	__raw_writeq(next, IOADDR(A_SCD_PERF_CNT_1));
 	/* Reset the trace buffer */
 	__raw_writeq(M_SCD_TRACE_CFG_RESET, IOADDR(A_SCD_TRACE_CFG));
-#if 0 && defined(M_SCD_TRACE_CFG_FORCECNT)
-	/* XXXKW may want to expose control to the data-collector */
-	tb_options |= M_SCD_TRACE_CFG_FORCECNT;
-#endif
 	__raw_writeq(tb_options, IOADDR(A_SCD_TRACE_CFG));
 	sbp.tb_armed = 1;
 }

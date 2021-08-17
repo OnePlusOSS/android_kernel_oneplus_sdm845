@@ -802,19 +802,9 @@ int fast_timer_init(void)
   /* For some reason, request_irq() hangs when called froom time_init() */
   if (!fast_timer_is_init)
   {
-#if 0 && defined(FAST_TIMER_TEST)
-    int i;
-#endif
 
     printk(KERN_INFO "fast_timer_init()\n");
 
-#if 0 && defined(FAST_TIMER_TEST)
-    for (i = 0; i <= TIMER0_DIV; i++)
-    {
-      /* We must be careful not to get overflow... */
-      printk("%3i %6u\n", i, timer0_value_us[i]);
-    }
-#endif
 #ifdef CONFIG_PROC_FS
    proc_create("fasttimer", 0, NULL, &proc_fasttimer_fops);
 #endif /* PROC_FS */

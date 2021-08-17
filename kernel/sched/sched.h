@@ -688,7 +688,7 @@ struct root_domain {
 	struct max_cpu_capacity max_cpu_capacity;
 
 	/* First cpu with maximum and minimum original capacity */
-	int max_cap_orig_cpu, min_cap_orig_cpu;
+	int max_cap_orig_cpu, min_cap_orig_cpu, mid_cap_orig_cpu;
 };
 
 extern struct root_domain def_root_domain;
